@@ -1,0 +1,11 @@
+bin/
+obj/
+*.user
+*.suo
+.vs/
+.verification/
+source-baseline.json
+source-baseline-status.txt
+verification/bin/
+verification/obj/
+*.log
