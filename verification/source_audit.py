@@ -30,6 +30,9 @@ for key, value in defaults(original).items():
     extracted = [defaults(text)[key] for text in new.values() if key in defaults(text)]
     assert extracted and all(x == value for x in extracted), f'Config default changed: {key}: {value} -> {extracted}'
 print('PASS original configuration defaults preserved for every extracted literal setting.')
+retired = {'PistolRange', 'SmgRange', 'RifleRange', 'SniperRange', 'ShotgunRange', 'CrossbowRange'}
+assert not ({('Tracers', k) for k in retired} & binds(new['npcai'])), 'Editable NPCAI fallback ranges remain.'
+print('PASS NPCAI fallback ranges have no configuration bindings; Gunplay remains their configurable owner.')
 
 for rel in ['Models', 'Sounds']:
     for asset in (OLD / rel).rglob('*'):

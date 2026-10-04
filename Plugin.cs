@@ -15,13 +15,12 @@ namespace NPCAI
     [BepInDependency("com.denis.apocalypter.gunplay", BepInDependency.DependencyFlags.SoftDependency)]
     public sealed class Plugin : BaseUnityPlugin
     {
-        public const string GUID = "com.denis.apocalypter.npcai", NAME = "NPCAI", VERSION = "1.0.0";
+        public const string GUID = "com.denis.apocalypter.npcai", NAME = "NPCAI", VERSION = "1.0.1";
         internal static ManualLogSource Log;
         internal static string Dir;
         internal static ConfigEntry<bool> VerboseLog;
         internal static ConfigEntry<bool> AimEnabled;
         internal static ConfigEntry<float> AimTimeScale, FacingTolerance, AimBaseDistance, AimDelayPer5m, SpreadPer5m, EngagePercent, EngagePatience, HoldRecheckMin, HoldRecheckMax;
-        internal static ConfigEntry<float> PistolRange, SmgRange, RifleRange, SniperRange, ShotgunRange, CrossbowRange;
         internal static ConfigEntry<bool> BrainEnabled, DropCheck, BrainLog, AimPose, ShooterPathing, ScaleWithActors;
         internal static ConfigEntry<float> TurnRate, CrouchChance, SensorInterval, ReactionTime, FeelerLength, MeleeFeelerLength, FeelerAngle, AdvanceChance, AdvanceMin, AdvanceMax, StuckBackupSeconds, StuckMemorySeconds, MaxDistance;
         internal static ConfigEntry<int> FeelerCount, StuckGiveUpCount, PursuitMin, PursuitMax;
@@ -66,12 +65,6 @@ namespace NPCAI
             VerboseLog = Config.Bind("Debug", "VerboseLog", false, "Detailed logs for every part of the mod (hits, detection, movement, maps).");
             NavDump = Config.Bind("Debug", "NavDump", false, "Map pictures (BMP) of every camp map made, and of NPCs that find no route, in config/Apocaraider/NavDump (0.5-4 MB each; for troubleshooting). With VerboseLog also a per-second Trace line for every moving NPC and a trace picture of its trail when a chase ends or it rests (cyan = the map's route, white = walked on the map, orange = walked without the map, red = backing up / resting).");
             ShowNav = Config.Bind("Debug", "ShowNavigation", false, "Draw the detection ghosts, NPC states and the structure maps' waypoints in the world.");
-            PistolRange = Config.Bind("Tracers", "PistolRange", 60f, new ConfigDescription("Pistols/revolvers: damage falls off linearly with distance - half at 50 % of this range, the bullet is gone at 100 %. Metres.", new AcceptableValueRange<float>(5f, 1000f)));
-            SmgRange = Config.Bind("Tracers", "SmgRange", 70f, new ConfigDescription("SMGs, falloff range in metres (half damage at half range).", new AcceptableValueRange<float>(5f, 1000f)));
-            RifleRange = Config.Bind("Tracers", "RifleRange", 120f, new ConfigDescription("Automatic rifles and machine guns, falloff range in metres.", new AcceptableValueRange<float>(5f, 1000f)));
-            SniperRange = Config.Bind("Tracers", "SniperRange", 250f, new ConfigDescription("Sniper/scoped rifles, falloff range in metres.", new AcceptableValueRange<float>(5f, 1000f)));
-            ShotgunRange = Config.Bind("Tracers", "ShotgunRange", 35f, new ConfigDescription("Shotguns, falloff range in metres.", new AcceptableValueRange<float>(5f, 1000f)));
-            CrossbowRange = Config.Bind("Tracers", "CrossbowRange", 90f, new ConfigDescription("Crossbows, falloff range in metres.", new AcceptableValueRange<float>(5f, 1000f)));
             AimTimeScale = H("NpcAim", "AimTimeScale", 50f, new ConfigDescription(
                 "How long NPCs take to aim between bursts, as % of the game's own pause (3-5 s, plus the distance delay): 50 = half the time, 100 = as the game, 300 = three times slower.",
                 new AcceptableValueRange<float>(1f, 300f)));
@@ -183,6 +176,7 @@ namespace NPCAI
             NavLog = SensesLog = BrainLog = VerboseLog;
             ShowGhosts = ShowNav;
             LegacyConfig.Import(Config, Log, existing);
+            WeaponRanges.RemoveLegacySettings(Config);
             try
             {
                 var h = new Harmony(GUID + ".brain");

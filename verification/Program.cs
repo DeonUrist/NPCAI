@@ -12,6 +12,7 @@ internal static class Program
     static readonly string[] Dirs = { "womenofwasteland", "gunplayhud", "gunplay", "npcai" };
     static readonly string[] Names = { "WomenOfWasteland", "GunplayHUD", "Gunplay", "NPCAI" };
     static readonly string[] RangeFields = { "PistolRange", "SmgRange", "RifleRange", "SniperRange", "ShotgunRange", "CrossbowRange" };
+    static readonly float[] FixedRanges = { 60,70,120,250,35,90 };
     static void Check(bool value, string message) { if (!value) throw new Exception(message); checks++; }
     static Assembly Resolve(object sender, ResolveEventArgs e)
     {
@@ -26,7 +27,7 @@ internal static class Program
         {
             root = Path.GetFullPath(args[0]); game = Path.GetFullPath(args[1]);
             AppDomain.CurrentDomain.AssemblyResolve += Resolve;
-            if (args[2] == "ranges") { InitializePaths(); VerifyRanges(); VerifyMigration(); }
+            if (args[2] == "ranges") { InitializePaths(); VerifyRanges(); VerifyMigration(); VerifyRetiredRanges(); }
             else if (args[2] == "hooks") VerifyHooks();
             else VerifyCombination(int.Parse(args[2]));
             Console.WriteLine("PASS " + args[2] + ": " + checks + " managed checks; gameplay not executed.");
@@ -137,11 +138,11 @@ internal static class Program
         var sets = new[] { new float[] { 60,70,120,250,35,90 }, new float[] { 5,1000,123,456,35,90 }, new float[] { -2,0,0.5f,1,2,3 } };
         foreach (var values in sets)
         {
-            SetRanges(old, values); SetRanges(gun, values); SetRanges(ai, values);
+            SetRanges(old, values); SetRanges(gun, values);
             for (int kind = 0; kind < 6; kind++)
             {
                 float o = Range(original, kind); float g = Range(modern, kind); float f = Range(fallback, kind);
-                Check(o == g && g == f, "Range parity kind " + kind + ": " + o + "/" + g + "/" + f);
+                Check(o == g && f == FixedRanges[kind], "Gunplay parity/fixed fallback kind " + kind + ": " + o + "/" + g + "/" + f);
             }
         }
         foreach (string weapon in new[] { "Crossbow", "slamfire", "slamberg", "rochester", "sniper", "scoped", "redmark", "smg", "borz", "pistol", "revolver", "folk_17", "rifle", "unknown", "SCOPED_SHOTGUN", "crossbow_pistol" })
@@ -152,18 +153,43 @@ internal static class Program
             int f = Convert.ToInt32(fallback.GetMethod("Classify", flags).Invoke(null, new object[] { weapon }));
             Check(o == g && g == f, "Classifier parity " + weapon);
         }
-        // Exercise the actual optional delegate path with deliberately conflicting fallback values.
+        // Exercise the optional delegate path with Gunplay values differing from fixed fallback.
         var gunApi = gun.GetType("Gunplay.Api", true);
         var provider = (Func<int, float>)Delegate.CreateDelegate(typeof(Func<int, float>), gunApi.GetMethod("EffectiveRange"));
         var providerField = fallback.GetField("_range", BindingFlags.Static | BindingFlags.NonPublic);
         providerField.SetValue(null, provider);
         SetRanges(gun, new float[] { 66,77,133,299,44,99 });
-        SetRanges(ai, new float[] { 5,5,5,5,5,5 });
         for (int kind = 0; kind < 6; kind++)
             Check(Range(fallback, kind) == provider(kind), "Gunplay authoritative delegate path " + kind);
         providerField.SetValue(null, new Func<int,float>(_ => { throw new InvalidOperationException("Unavailable provider"); }));
-        for (int kind = 0; kind < 6; kind++) Check(Range(fallback, kind) == 5f, "Failed provider must fall back " + kind);
+        for (int kind = 0; kind < 6; kind++) Check(Range(fallback, kind) == FixedRanges[kind], "Failed provider must fall back " + kind);
         providerField.SetValue(null, null);
+    }
+    static void VerifyRetiredRanges()
+    {
+        var ai = Load(3);
+        var plugin = ai.GetType("NPCAI.Plugin", true);
+        foreach (var key in RangeFields)
+            Check(plugin.GetField(key, BindingFlags.Static | BindingFlags.NonPublic) == null, "Editable NPCAI range field remains " + key);
+        var path = Path.Combine(BepInEx.Paths.ConfigPath, "NPCAI-retired-ranges.cfg");
+        File.WriteAllText(path, "[Tracers]\n" + string.Join("\n", RangeFields.Select(k => k + " = 999")) +
+            "\nKeepCustom = 123\n[Detection]\nSightRange = 142\n[Other]\nRifleRange = 777\n");
+        var cfg = new ConfigFile(path, false) { SaveOnConfigSet = false };
+        var sight = cfg.Bind("Detection", "SightRange", 100, "existing setting");
+        var ranges = ai.GetType("NPCAI.WeaponRanges", true);
+        var cleanup = ranges.GetMethod("RemoveLegacySettings", BindingFlags.Static | BindingFlags.NonPublic);
+        cleanup.Invoke(null, new object[] { cfg });
+        var text = File.ReadAllText(path);
+        var entries = (System.Collections.IDictionary)typeof(ConfigFile).GetProperty("OrphanedEntries", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(cfg, null);
+        foreach (var key in RangeFields)
+            Check(!entries.Contains(new ConfigDefinition("Tracers", key)), "Retired range orphan remains " + key);
+        Check(entries.Contains(new ConfigDefinition("Tracers", "KeepCustom")), "Unrelated orphan removed");
+        Check(entries.Contains(new ConfigDefinition("Other", "RifleRange")), "Unrelated section entry removed");
+        Check(sight.Value == 142 && text.Contains("SightRange = 142"), "Existing settings changed");
+        for (int kind = 0; kind < 6; kind++)
+            Check(Range(ranges, kind) == FixedRanges[kind], "Old user values still affect fixed fallback " + kind);
+        cleanup.Invoke(null, new object[] { cfg });
+        Check(File.ReadAllText(path) == text, "Cleanup is not idempotent");
     }
     static void VerifyMigration()
     {

@@ -7,6 +7,13 @@ fight, steer around obstacles and follow camp/cave/building maps. Camp NPCs retu
 and patrol. Busy friends can pass through each other. NPC aim pacing and firing decisions
 respect weapon reach. Flying creatures and seated Apocapatrol crews keep game movement.
 
+## Version 1.0.1
+
+NPCAI's six fallback weapon ranges are now fixed internal values rather than editable
+settings. Gunplay's range settings remain authoritative when that mod is installed.
+Old NPCAI range entries are retired automatically; all other AI settings and behavior
+are preserved.
+
 ## Build and install
 
 Requires the .NET SDK, .NET Framework 4.7.2 targeting support, the installed game and BepInEx 5.
@@ -34,11 +41,12 @@ on Gunplay for load ordering. NPCAI has no sibling assembly reference. If Gunpla
 NPCAI dynamically resolves its version-one public range/classification API. Gunplay's
 configured ranges are authoritative even when projectile simulation is disabled.
 Without Gunplay, NPC weapon discovery and classification reproduce the original rules
-and use local `[Tracers]` fallback range settings: pistol 60, SMG 70, rifle 120, sniper
+and use fixed internal fallback ranges: pistol 60, SMG 70, rifle 120, sniper
 250, shotgun 35 and crossbow 90 metres, each clamped to at least one metre. Gunplay and
 NPCAI use the same kind ordinals and classification order; focused contract tests check
-consistency. Installing Gunplay intentionally makes its range settings win over fallback
-settings in NPCAI.
+consistency. These fallback values are not configurable in NPCAI. Installing Gunplay
+makes its editable range settings authoritative. The six old NPCAI `[Tracers]` range
+entries are removed from its config on startup; all other settings are preserved.
 
 Public `NPCAI.Api` contract version 1 exposes `Shot(GameObject,Vector3,int,bool)`,
 `Hurt(GameObject,GameObject)`, `Hurt(GameObject,bool)`, `SpreadFactor(float)` and

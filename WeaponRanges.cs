@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Reflection;
 using BepInEx.Bootstrap;
+using BepInEx.Configuration;
 using UnityEngine;
 
 namespace NPCAI
@@ -57,13 +58,33 @@ namespace NPCAI
                 catch (Exception e) { Plugin.Warn("Gunplay range query failed: " + e.Message); }
             switch (k)
             {
-                case Kind.Pistol: return Mathf.Max(1f, Plugin.PistolRange.Value);
-                case Kind.Smg: return Mathf.Max(1f, Plugin.SmgRange.Value);
-                case Kind.Sniper: return Mathf.Max(1f, Plugin.SniperRange.Value);
-                case Kind.Shotgun: return Mathf.Max(1f, Plugin.ShotgunRange.Value);
-                case Kind.Crossbow: return Mathf.Max(1f, Plugin.CrossbowRange.Value);
-                default: return Mathf.Max(1f, Plugin.RifleRange.Value);
+                case Kind.Pistol: return 60f;
+                case Kind.Smg: return 70f;
+                case Kind.Sniper: return 250f;
+                case Kind.Shotgun: return 35f;
+                case Kind.Crossbow: return 90f;
+                default: return 120f;
             }
+        }
+
+        // Retire only the six formerly editable fallback keys. Other orphaned/user entries remain intact.
+        internal static void RemoveLegacySettings(ConfigFile config)
+        {
+            try
+            {
+                var property = typeof(ConfigFile).GetProperty("OrphanedEntries", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+                var entries = property != null ? property.GetValue(config, null) as System.Collections.IDictionary : null;
+                if (entries == null) return;
+                bool changed = false;
+                foreach (var key in new[] { "PistolRange", "SmgRange", "RifleRange", "SniperRange", "ShotgunRange", "CrossbowRange" })
+                {
+                    var definition = new ConfigDefinition("Tracers", key);
+                    if (!entries.Contains(definition)) continue;
+                    entries.Remove(definition); changed = true;
+                }
+                if (changed) config.Save();
+            }
+            catch (Exception e) { Plugin.Warn("Retired range settings cleanup: " + e.Message); }
         }
 
         internal static Kind Classify(string weapon)
