@@ -7,6 +7,22 @@ fight, steer around obstacles and follow camp/cave/building maps. Camp NPCs retu
 and patrol. Busy friends can pass through each other. NPC aim pacing and firing decisions
 respect weapon reach. Flying creatures and seated Apocapatrol crews keep game movement.
 
+## Version 1.1.2
+
+Gunmen reload. The magazine of each gun is the player's own weapon's capacity (read from the
+game's Reload FSMs: AKs / M16 30, akm_drum 70, borz 25, folk_17 17, revolver 5, Slambergs 5,
+Redmarks 4, Rochesters 2, pipe pistol / slam-fire / crossbow 1; the 22_pipe_smg's 165 is cut
+to 30 - hidden `[NpcAim] MagazineTable`). Every ray of a burst is a shot, a burst never fires
+past the magazine (a single-shot gun fires one ray per burst), and the next burst is replaced
+by the reload: Apocaplayer's `RifleReload` / `PistolReload` on an upper-body layer over the
+legs - he keeps strafing, backing up or kneeling while reloading, like the player - for the
+clip's length (`ReloadSeconds` without the clip; `SingleShotReload`, 1 s, for magazines of
+1-2 with the clip sped up to it), with the sounds the player's copy of that gun plays while
+reloading (`ReloadVolume`, `ReloadSoundRange`). A running chaser with an empty gun reloads when
+he next squares up. `Magazines = false` turns it off. The bone-bent kneel is gone: crouching
+exists only with Apocaplayer's crouch clips (clip + a 0.45 m shorter capsule). Shots are
+counted whatever else is enabled (the counter used to sit behind an early return).
+
 ## Version 1.1.1
 
 With **Apocaplayer** installed (its animation bundle and weapon-pose table), human NPCs are

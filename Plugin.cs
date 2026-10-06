@@ -15,12 +15,13 @@ namespace NPCAI
     [BepInDependency("com.denis.apocalypter.gunplay", BepInDependency.DependencyFlags.SoftDependency)]
     public sealed class Plugin : BaseUnityPlugin
     {
-        public const string GUID = "com.denis.apocalypter.npcai", NAME = "NPCAI", VERSION = "1.1.1";
+        public const string GUID = "com.denis.apocalypter.npcai", NAME = "NPCAI", VERSION = "1.1.2";
         internal static ManualLogSource Log;
         internal static string Dir;
         internal static ConfigEntry<bool> ApocaplayerClips, VerboseLog;
         internal static ConfigEntry<bool> AimEnabled;
-        internal static ConfigEntry<float> AimTimeScale, FacingTolerance, EngagePercent;
+        internal static ConfigEntry<float> AimTimeScale, FacingTolerance, EngagePercent, ReloadSeconds, SingleShotReload, ReloadVolume, ReloadSoundRange;
+        internal static ConfigEntry<bool> Magazines; internal static ConfigEntry<string> MagazineTable;
         internal static ConfigEntry<bool> BrainEnabled, DropCheck, BrainLog, AimPose, ScaleWithActors;
         internal static ConfigEntry<float> TurnRate, CrouchChance, ReactionTime, FeelerLength, MeleeFeelerLength, FeelerAngle, AdvanceChance, AdvanceMin, AdvanceMax, StuckBackupSeconds, StuckMemorySeconds, MaxDistance;
         internal static ConfigEntry<int> FeelerCount, StuckGiveUpCount, Guesses;
@@ -73,6 +74,13 @@ namespace NPCAI
             EngagePercent = H("NpcAim", "EngagePercent", 85f, new ConfigDescription(
                 "NPCs open fire once the target is within this % of the gun's reach; farther away they keep closing in. Never beyond the reach itself.",
                 new AcceptableValueRange<float>(1f, 100f)));
+            Magazines = H("NpcAim", "Magazines", true, "Gunmen reload: after the magazine of their gun (MagazineTable: the player's own weapons' capacities) they stop firing for the reload (Apocaplayer's RifleReload / PistolReload clip when its animations are in use, else ReloadSeconds). They reload standing, kneeling or in cover, not while running.");
+            MagazineTable = H("NpcAim", "MagazineTable", "22_pipe_pistol=1, 22_pipe_revolver=5, 22_pipe_smg=30, akm_drum=70, akm_trash=30, akms=30, borz_smg=25, crossbow=1, folk_17=17, m16a1=30, redmark_m11=4, redmark_m11_scoped=4, rochester_m24=2, rochester_m24_chopped=2, slamberg_500=5, slamberg_500_chopped=5, slamfire_shotgun=1",
+                "Shots per magazine by weapon model (the game's own Reload FSM capacities of the player's weapons, 2026-10-06; the 22_pipe_smg's 165 is cut to 30 here). A gun not listed never reloads.");
+            SingleShotReload = H("NpcAim", "SingleShotReload", 1f, new ConfigDescription("Reload time of a gun with a magazine of 1-2 (pipe pistol, slam-fire shotgun, crossbow, the Rochesters): the reload clip is sped up to it, s.", new AcceptableValueRange<float>(0.3f, 5f)));
+            ReloadVolume = H("NpcAim", "ReloadVolume", 1f, new ConfigDescription("Volume of a gunman's reload sounds (the clips the player's copy of the gun plays while reloading). 0 = silent.", new AcceptableValueRange<float>(0f, 1f)));
+            ReloadSoundRange = H("NpcAim", "ReloadSoundRange", 35f, new ConfigDescription("How far a reload is heard, m (linear falloff from 2 m).", new AcceptableValueRange<float>(5f, 100f)));
+            ReloadSeconds = H("NpcAim", "ReloadSeconds", 2.5f, new ConfigDescription("Reload time without a reload clip, s.", new AcceptableValueRange<float>(0.5f, 10f)));
             ReactionTime = H("Brain", "ReactionTime", 100f, new ConfigDescription(
                 "How quickly NPCs think and react, as % of the default: every wait of the brain (looks, backing out of a stuck, resting, keeping a way around an obstacle, rechecks while holding) is scaled by this. 50 = twice as quick, 500 = five times slower.",
                 new AcceptableValueRange<float>(1f, 500f)));

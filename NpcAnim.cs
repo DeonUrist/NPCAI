@@ -141,6 +141,8 @@ namespace NPCAI
             return c;
         }
 
+        internal static float ClipLength(string name) { var c = Clip(name); return c != null ? c.length : 0f; }
+
         // "akm_trash_model" -> "akm_trash", "9mm_borz_smg" -> "borz_smg": the pose table's weapon key (Apocaplayer.Props.Norm)
         internal static string WeaponKey(Transform weapon)
         {
@@ -185,6 +187,7 @@ namespace NPCAI
             if (pose == "Fire") { fire = true; slot = "Idle"; }
             else if (pose == "CrouchFire") { fire = true; slot = "CrouchIdle"; }
             else if (pose.StartsWith("Fire")) { fire = true; slot = pose.Substring(4); }
+            if (pose == "Reload") return Clip(prefix + "Reload") != null ? prefix + "Reload" : null;
             if (fire)
             {
                 string c = SetClip(prefix + "Fire", prefix, slot, out speed);
@@ -247,6 +250,8 @@ namespace NPCAI
             // (1.1.1) legs-only rig (melee humans): the NPC's own controller plays as layer 0 of the graph, the locomotion clip as a
             // leg-masked layer 1 whose weight is LegW (0 = the game's clip entirely: idle, the swing)
             public bool Legs; public AnimatorControllerPlayable Ctrl; public AnimationLayerMixerPlayable Layers; public float LegW, LegTarget;
+            // (1.1.2) gun rig: the reload clip on an upper-body layer over the locomotion (like the player's: he walks and kneels while reloading)
+            public AnimationClipPlayable Reload; public bool HasReload; public float ReloadW, ReloadTarget;
             public bool On { get { return G.IsValid(); } }
         }
 
@@ -262,6 +267,21 @@ namespace NPCAI
                 _legMask.SetHumanoidBodyPartActive(part, legs);
             }
             return _legMask;
+        }
+
+        private static AvatarMask _upperMask;
+        private static AvatarMask UpperMask()
+        {
+            if (_upperMask != null) return _upperMask;
+            _upperMask = new AvatarMask();
+            foreach (AvatarMaskBodyPart part in Enum.GetValues(typeof(AvatarMaskBodyPart)))
+            {
+                if (part == AvatarMaskBodyPart.LastBodyPart) continue;
+                bool upper = part == AvatarMaskBodyPart.Body || part == AvatarMaskBodyPart.Head || part == AvatarMaskBodyPart.LeftArm || part == AvatarMaskBodyPart.RightArm
+                          || part == AvatarMaskBodyPart.LeftFingers || part == AvatarMaskBodyPart.RightFingers || part == AvatarMaskBodyPart.LeftHandIK || part == AvatarMaskBodyPart.RightHandIK;
+                _upperMask.SetHumanoidBodyPartActive(part, upper);
+            }
+            return _upperMask;
         }
 
         internal static Rig MakeLegs(Animator a, Transform root)
@@ -342,8 +362,10 @@ namespace NPCAI
 
         // plays the clip for poseName of the weapon's set (crossfading 0.15 s from the one before) at speed x speedScale (0 = held on its
         // first frame), and puts the gun in the right hand at the pose
-        internal static void Play(Rig r, string prefix, string poseName, float speedScale, Transform weapon, string weaponKey) { Play(r, prefix, poseName, speedScale, weapon, weaponKey, false); }
-        internal static void Play(Rig r, string prefix, string poseName, float speedScale, Transform weapon, string weaponKey, bool cycle)
+        internal static void Play(Rig r, string prefix, string poseName, float speedScale, Transform weapon, string weaponKey) { Play(r, prefix, poseName, speedScale, weapon, weaponKey, false, false, 1f); }
+        internal static void Play(Rig r, string prefix, string poseName, float speedScale, Transform weapon, string weaponKey, bool cycle) { Play(r, prefix, poseName, speedScale, weapon, weaponKey, cycle, false, 1f); }
+        // reload: the Reload clip of the set plays on the upper body (at reloadSpeed) over whatever the legs do; the gun takes the Reload pose
+        internal static void Play(Rig r, string prefix, string poseName, float speedScale, Transform weapon, string weaponKey, bool cycle, bool reload, float reloadSpeed)
         {
             if (r == null || r.A == null) return;
             float speed;
@@ -359,16 +381,36 @@ namespace NPCAI
                 r.G.SetTimeUpdateMode(DirectorUpdateMode.GameTime);
                 var output = AnimationPlayableOutput.Create(r.G, "body", r.A);
                 r.Mix = AnimationMixerPlayable.Create(r.G, 2);
-                output.SetSourcePlayable(r.Mix);
+                r.Layers = AnimationLayerMixerPlayable.Create(r.G, 2);
+                r.G.Connect(r.Mix, 0, r.Layers, 0); r.Layers.SetInputWeight(0, 1f);
+                r.Layers.SetInputWeight(1, 0f); r.Layers.SetLayerMaskFromAvatarMask(1, UpperMask());
+                output.SetSourcePlayable(r.Layers);
                 r.RootMotionWas = r.A.applyRootMotion; r.A.applyRootMotion = false;
                 r.Cur = AnimationClipPlayable.Create(r.G, clip);
                 r.Cur.SetApplyFootIK(false);
                 r.G.Connect(r.Cur, 0, r.Mix, 0); r.Mix.SetInputWeight(0, 1f); r.Mix.SetInputWeight(1, 0f);
-                r.HasOld = false; r.Fade = 1f;
+                r.HasOld = false; r.Fade = 1f; r.HasReload = false; r.ReloadW = r.ReloadTarget = 0f;
                 r.G.Play();
                 fresh = true;
             }
             else if (r.Clip != clipName) { Swap(r, clip, cycle); fresh = true; }
+            // the reload layer
+            if (reload)
+            {
+                var rc = Clip(prefix + "Reload");
+                if (rc != null)
+                {
+                    if (!r.HasReload)
+                    {
+                        r.Reload = AnimationClipPlayable.Create(r.G, rc); r.Reload.SetApplyFootIK(false);
+                        r.G.Connect(r.Reload, 0, r.Layers, 1); r.HasReload = true; r.Reload.SetTime(0);
+                    }
+                    r.Reload.SetSpeed(reloadSpeed);
+                    r.ReloadTarget = 1f;
+                    poseName = "Reload";
+                }
+            }
+            else r.ReloadTarget = 0f;
             if (fresh && speed < 0f && !(cycle && r.Cycle)) r.Cur.SetTime(clip.length);                 // a reversed clip starts from its end
             r.Cycle = cycle;
             if (speed == 0f && (fresh || r.Speed != 0f)) r.Cur.SetTime(0);        // the aim: the firing clip's first frame (Apocaplayer holds it the same way)
@@ -390,6 +432,11 @@ namespace NPCAI
         {
             if (r == null || !r.G.IsValid()) return;
             if (r.Legs && r.LegW != r.LegTarget) { r.LegW = Mathf.MoveTowards(r.LegW, r.LegTarget, dt / 0.15f); r.Layers.SetInputWeight(1, r.LegW); }
+            if (!r.Legs && r.HasReload && r.ReloadW != r.ReloadTarget)
+            {
+                r.ReloadW = Mathf.MoveTowards(r.ReloadW, r.ReloadTarget, dt / 0.15f); r.Layers.SetInputWeight(1, r.ReloadW);
+                if (r.ReloadW <= 0f) { r.G.Disconnect(r.Layers, 1); r.Reload.Destroy(); r.HasReload = false; }
+            }
             if (!r.HasOld) return;
             r.Fade = Mathf.Min(1f, r.Fade + dt / 0.15f);
             r.Mix.SetInputWeight(0, r.Fade); r.Mix.SetInputWeight(1, 1f - r.Fade);
@@ -415,7 +462,7 @@ namespace NPCAI
                 if (r.Legs && r.A != null) { try { var st = r.Ctrl.GetCurrentAnimatorStateInfo(0); r.A.Play(st.fullPathHash, 0, st.normalizedTime); } catch (Exception) { } }
                 r.G.Destroy(); if (r.A != null) r.A.applyRootMotion = r.RootMotionWas;
             }
-            r.HasOld = false; r.Clip = ""; r.Pose = ""; r.Speed = 1f; r.Cycle = false; r.LegW = r.LegTarget = 0f;
+            r.HasOld = false; r.HasReload = false; r.Clip = ""; r.Pose = ""; r.Speed = 1f; r.Cycle = false; r.LegW = r.LegTarget = 0f; r.ReloadW = r.ReloadTarget = 0f;
             Release(r);
         }
     }

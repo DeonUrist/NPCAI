@@ -95,6 +95,13 @@ namespace NPCAI
                 if (target == null) return true;
 
                 var st = StateOf(owner);
+                if (Brain.NeedsReload(owner))
+                {
+                    // (1.1.2) empty magazine: the reload instead of the burst (the brain plays the clip); back in 1-4 s
+                    st.Holding = true; st.Turning = false;
+                    __instance.Finish();
+                    return false;
+                }
                 if (Senses.IsGhostTarget(owner))
                 {
                     // the "target" is a ghost (a place the NPC goes to look at): nothing to shoot at

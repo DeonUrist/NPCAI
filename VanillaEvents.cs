@@ -16,9 +16,10 @@ namespace NPCAI
             __state = null;
             try
             {
-                if (WeaponRanges.ProjectilesEnabled || (!Senses.On && !Plugin.AimEnabled.Value && !Plugin.BrainEnabled.Value)) return;
                 var fsm = __instance.Fsm;
                 if (fsm == null || fsm.Name != "Damage Ranged" || fsm.GameObject == null) return;
+                Brain.Shot(fsm.GameObject, fsm);        // (1.1.2) one ray = one shot of the magazine (counted whatever else is on)
+                if (WeaponRanges.ProjectilesEnabled || (!Senses.On && !Plugin.AimEnabled.Value && !Plugin.BrainEnabled.Value)) return;
                 WeaponRanges.Kind kind;
                 var owner = fsm.GameObject;
                 if (!WeaponRanges.GunKindOf(owner, out kind)) return;

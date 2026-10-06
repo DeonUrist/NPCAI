@@ -45,7 +45,7 @@ namespace NPCAI
     {
         internal enum Mode { Off, Chase, Hold, Advance, BackUp, Rest, Search, Walk, Cover }   // Walk (1.6.0): Idle walks it to a ghost, the brain stands aside; Cover (1.1.0): runs to cover, fights from there
 
-        private sealed class Npc
+        internal sealed class Npc
         {
             public GameObject Owner; public Transform T; public Rigidbody Rb; public Collider Col;
             public PlayMakerFSM Attack, Movement;
@@ -54,12 +54,10 @@ namespace NPCAI
             public Animator Anim; public string AimState; public bool Frozen;   // the shooting animation held on its first frame = aiming
             public NpcAnim.Rig Rig; public float RigTried; public bool Strafing;   // (1.1.1) Apocaplayer's clips on this gunman: aim / crouch / strafe / run
             public Transform Weapon; public string WeaponKey;                       // the gun model in its hand and the pose table's key for it
+            public int Shots, Magazine; public bool Reloading; public float ReloadUntil, ReloadLen; public int ReloadSoundsPlayed;   // (1.1.2) the magazine: shots since the last reload, its size (0 = never reloads)
             public bool WeaponDirty; public float SpeedCap; public bool LocoRun, LocoStrafe, LocoMoving;   // slot hysteresis: walk/run, forward/sideways, still/moving                         // the game toggled something of this NPC (its gun models) -> re-find the gun; max ground speed for the clip that plays (no sliding)
             public float StrafeDev;                                                  // (1.1.1) chasing with clips: the heading's angle off the facing when the body keeps facing the target and the legs strafe (0 = turn as usual)
-            public int CanCrouch;                     // 0 unknown, 1 has the leg bones, -1 no
-            public bool Crouched, PoseCaptured; public float Drop;
-            public Transform Hips, LUpLeg, LLeg, RUpLeg, RLeg;
-            public Vector3 HipsLocal; public Quaternion LUpLegRot, LLegRot, RUpLegRot, RLegRot;   // the standing pose the kneel is built on
+            public bool Crouched; public float Drop;
             public CapsuleCollider Capsule; public float CapHeight; public Vector3 CapCenter;
             public Mode Mode; public float ModeUntil;
             public float NextTick, NextRecheck, Stagger;
@@ -107,7 +105,7 @@ namespace NPCAI
         private static readonly float[] _scores = new float[32];
         private static readonly float[] _blocks = new float[32];
 
-        public static void OnSceneLoaded() { foreach (var kv in _npcs) NpcAnim.Stop(kv.Value.Rig); _npcs.Clear(); _ignored.Clear(); _active = 0; }
+        public static void OnSceneLoaded() { foreach (var kv in _npcs) NpcAnim.Stop(kv.Value.Rig); _npcs.Clear(); _ignored.Clear(); _active = 0; ReloadSounds.Clear(); }
 
         internal static bool On { get { return Plugin.BrainEnabled != null && Plugin.BrainEnabled.Value; } }
         // [Brain] ReactionTime %: every wait of the brain (think interval, back-up, rest, side lock, no-progress, memory, LOS tolerance,
@@ -162,6 +160,7 @@ namespace NPCAI
                 bool engaged = Engaged(n, out state);
                 if (n.Ranged && n.Rig == null && now < n.MadeAt + 60f) TryRig(n);
                 if (n.Rig != null) Drive(n, state ?? AttackState(n), now, dt);                      // (1.1.1) Apocaplayer's clips: the clip for this frame, engaged or not
+                if (n.Reloading) ReloadSounds.Tick(n, now);                                           // (1.1.2) the reload's sounds, rig or not
                 if (!engaged)
                 {
                     if (n.Mode != Mode.Off) SetMode(n, Mode.Off, "target lost");
@@ -1050,6 +1049,7 @@ namespace NPCAI
                 if (w != n.Weapon)
                 {
                     n.Weapon = w; n.WeaponKey = NpcAnim.WeaponKey(w);
+                    n.Shots = 0; n.Reloading = false; n.Magazine = MagazineOf(n.WeaponKey);
                     if (Plugin.BrainLog.Value) Plugin.Log.LogInfo("Brain: " + n.Owner.name + " now holds " + (w != null ? n.WeaponKey : "nothing"));
                 }
             }
@@ -1082,6 +1082,7 @@ namespace NPCAI
             bool fire = burst || (rifle && facing);
             string pose = fire ? NpcAnim.FirePose(slot) : slot;
             bool still = slot == "Idle" || slot == "CrouchIdle";
+            float reloadClip = n.Reloading ? NpcAnim.ClipLength(prefix + "Reload") : 0f;     // (1.1.2) the reload: upper body over the legs' slot, sped up to the reload time
             float scale = 1f;
             if (still) { n.SpeedCap = 0f; if (fire && !burst) scale = 0f; }          // the aim: the firing clip's first frame
             else
@@ -1093,7 +1094,76 @@ namespace NPCAI
                 n.SpeedCap = native * 2f;
                 scale = Mathf.Clamp(ground / native, 0.5f, 2f);
             }
-            NpcAnim.Play(r, prefix, pose, scale, n.Weapon, n.WeaponKey, !still);
+            NpcAnim.Play(r, prefix, pose, scale, n.Weapon, n.WeaponKey, !still, reloadClip > 0f, reloadClip > 0f && n.ReloadLen > 0.05f ? reloadClip / n.ReloadLen : 1f);
+        }
+
+        // ---------- (1.1.2) magazines ----------
+        private static Dictionary<string, int> _mags; private static string _magSrc;
+        internal static int MagazineOf(string weaponKey)
+        {
+            if (weaponKey == null) return 0;
+            string src = Plugin.MagazineTable.Value ?? "";
+            if (_mags == null || _magSrc != src)
+            {
+                _mags = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase); _magSrc = src;
+                foreach (var part in src.Split(',', ';', '\n'))
+                {
+                    int eq = part.IndexOf('='); int v;
+                    if (eq > 0 && int.TryParse(part.Substring(eq + 1).Trim(), out v)) _mags[part.Substring(0, eq).Trim().ToLowerInvariant()] = v;
+                }
+            }
+            int m;
+            return _mags.TryGetValue(weaponKey, out m) ? m : 0;
+        }
+
+        // VanillaEvents: one ray of the Damage Ranged burst = one shot; a burst never fires past the magazine (the FSM's own loop counter
+        // "multyAttack" is pushed past its limit, so the loop ends after this ray: a single-shot gun fires one ray per burst)
+        internal static void Shot(GameObject owner, Fsm damageRanged)
+        {
+            var n = Get(owner);
+            if (n == null || !Plugin.Magazines.Value) return;
+            n.Shots++;
+            if (n.Magazine <= 0 && n.Weapon == null)
+            {
+                n.Weapon = WeaponRanges.WeaponOf(owner); n.WeaponKey = NpcAnim.WeaponKey(n.Weapon); n.Magazine = MagazineOf(n.WeaponKey);
+            }
+            if (n.Magazine > 0 && n.Shots >= n.Magazine && damageRanged != null)
+            {
+                var cnt = damageRanged.Variables.GetFsmInt("multyAttack");
+                if (cnt != null) cnt.Value = 1000;
+            }
+        }
+
+        // Aim, before a burst: true = hold fire (reloading, or empty and not yet standing still enough to reload)
+        internal static bool NeedsReload(GameObject owner)
+        {
+            if (!Plugin.Magazines.Value) return false;
+            var n = Get(owner);
+            if (n == null) return false;
+            if (n.Weapon == null)
+            {
+                // no rig (Apocaplayer absent): the gun is looked up here, once per burst until found
+                n.Weapon = WeaponRanges.WeaponOf(owner); n.WeaponKey = NpcAnim.WeaponKey(n.Weapon);
+                n.Shots = 0; n.Magazine = MagazineOf(n.WeaponKey);
+            }
+            if (n.Magazine <= 0) return false;
+            float now = Time.time;
+            if (n.Reloading)
+            {
+                if (now < n.ReloadUntil) return true;
+                n.Reloading = false; n.Shots = 0;
+                return false;
+            }
+            if (n.Shots < n.Magazine) return false;
+            // empty: reload once he stands (the burst itself only happens standing; a runner keeps running with an empty gun)
+            bool standing = n.Mode == Mode.Hold || n.Mode == Mode.Rest || (n.Mode == Mode.Cover && n.CoverArrived) || n.Mode == Mode.BackUp || n.Mode == Mode.Off;
+            if (!standing) return true;
+            float len = n.Rig != null && !n.Rig.Legs ? NpcAnim.ClipLength(NpcAnim.Prefix(n.WeaponKey) + "Reload") : 0f;
+            if (len <= 0f) len = Plugin.ReloadSeconds.Value;
+            if (n.Magazine <= 2) len = Mathf.Min(len, Plugin.SingleShotReload.Value);     // a break-action / single shot: a quick one, the clip sped up to it
+            n.Reloading = true; n.ReloadUntil = now + len; n.ReloadLen = len; n.ReloadSoundsPlayed = 0;
+            if (Plugin.BrainLog.Value) Plugin.Log.LogInfo("Brain: " + n.Owner.name + " reloads " + n.WeaponKey + " (" + n.Shots + " shots, " + len.ToString("0.0") + " s)");
+            return true;
         }
 
         // the legs rig (melee humans): the slot from the body's motion as above, layered over the game's own clip for the legs only;
@@ -1184,69 +1254,23 @@ namespace NPCAI
         }
 
         // ---------- crouch ----------
-        // There is no crouch animation for NPCs, so a holding gunman that rolled [Brain] CrouchChance kneels by code: every LateUpdate (after the
-        // Animator wrote its pose) the hips are lowered and the legs re-posed on top of the animation - left leg forward with the shin vertical,
-        // right knee on the ground with the shin folded back (the same bone-swing technique as Apocapatrol's seated pose). The root capsule is
-        // shortened to the kneeling height so bullets aimed at the empty air above him miss; the head's own trigger collider follows the bone.
-        private static bool FindLegs(Npc n)
-        {
-            if (n.CanCrouch != 0) return n.CanCrouch > 0;
-            n.CanCrouch = -1;
-            if (n.Owner == null) return false;
-            var all = n.Owner.GetComponentsInChildren<Transform>(true);
-            n.Hips = Bone(all, "Hips"); n.LUpLeg = Bone(all, "LeftUpLeg"); n.LLeg = Bone(all, "LeftLeg");
-            n.RUpLeg = Bone(all, "RightUpLeg"); n.RLeg = Bone(all, "RightLeg");
-            if (n.Hips == null || n.LUpLeg == null || n.LLeg == null || n.RUpLeg == null || n.RLeg == null) return false;
-            n.Capsule = n.Owner.GetComponent<CapsuleCollider>();
-            if (n.Capsule != null) { n.CapHeight = n.Capsule.height; n.CapCenter = n.Capsule.center; }
-            n.CanCrouch = 1;
-            return true;
-        }
-
-        private static Transform Bone(Transform[] all, string bone)
-        {
-            foreach (var t in all)
-            {
-                string s = t.name;
-                int i = s.LastIndexOf(':'); if (i < 0) i = s.LastIndexOf('_');
-                if ((i >= 0 ? s.Substring(i + 1) : s) == bone) return t;
-            }
-            return null;
-        }
-
         private static void Crouch(Npc n, bool on)
         {
             if (on == n.Crouched) return;
             if (on)
             {
-                if (n.Rig != null)
-                {
-                    // Apocaplayer's crouch clips: no bone posing, just the shorter capsule (about 0.45 m lower) and the clip (Aim / strafe pick it)
-                    if (n.Capsule == null) { n.Capsule = n.Owner.GetComponent<CapsuleCollider>(); if (n.Capsule != null) { n.CapHeight = n.Capsule.height; n.CapCenter = n.Capsule.center; } }
-                    n.Crouched = true; n.Drop = 0.45f;
-                    if (n.Capsule != null && n.CapHeight > 0f)
-                    {
-                        float bottom = n.CapCenter.y - n.CapHeight * 0.5f;
-                        float h = Mathf.Max(n.Capsule.radius * 2f, n.CapHeight - n.Drop);
-                        n.Capsule.height = h; n.Capsule.center = new Vector3(n.CapCenter.x, bottom + h * 0.5f, n.CapCenter.z);
-                    }
-                    return;
-                }
-                if (!FindLegs(n)) return;
-                // kneeling: the hips end up about one thigh length above the ground (the right thigh stands on its knee)
-                float thigh = Vector3.Distance(n.LUpLeg.position, n.LLeg.position);
-                float ground = n.Col != null ? n.Col.bounds.min.y : n.T.position.y - 1f;
-                float hip = n.Hips.position.y - ground;
-                n.Drop = Mathf.Clamp(hip - thigh * 0.95f, 0.2f, 0.8f);
-                n.Crouched = true; n.PoseCaptured = false;
+                // (1.1.2) only with Apocaplayer's crouch clips (the gun rig): the clip and a shorter capsule (about 0.45 m lower) so bullets
+                // aimed at the empty air above him miss. The old kneel built by bending the leg bones is gone.
+                if (n.Rig == null || n.Rig.Legs) return;
+                if (n.Capsule == null) { n.Capsule = n.Owner.GetComponent<CapsuleCollider>(); if (n.Capsule != null) { n.CapHeight = n.Capsule.height; n.CapCenter = n.Capsule.center; } }
+                n.Crouched = true; n.Drop = 0.45f;
                 if (n.Capsule != null && n.CapHeight > 0f)
                 {
                     float bottom = n.CapCenter.y - n.CapHeight * 0.5f;
                     float h = Mathf.Max(n.Capsule.radius * 2f, n.CapHeight - n.Drop);
-                    n.Capsule.height = h;
-                    n.Capsule.center = new Vector3(n.CapCenter.x, bottom + h * 0.5f, n.CapCenter.z);
+                    n.Capsule.height = h; n.Capsule.center = new Vector3(n.CapCenter.x, bottom + h * 0.5f, n.CapCenter.z);
                 }
-                if (Plugin.BrainLog.Value) Plugin.Log.LogInfo("Brain: " + n.Owner.name + " kneels (hips down " + n.Drop.ToString("0.00") + " m)");
+                if (Plugin.BrainLog.Value) Plugin.Log.LogInfo("Brain: " + n.Owner.name + " crouches");
             }
             else
             {
@@ -1255,41 +1279,7 @@ namespace NPCAI
             }
         }
 
-        private static void Swing(Transform bone, float degrees, Vector3 axis)
-        {
-            if (bone != null) bone.rotation = Quaternion.AngleAxis(degrees, axis) * bone.rotation;
-        }
-
-        // Runner.LateUpdate: re-pose the crouched gunmen on top of the animation. The standing leg pose is captured once (the first frame
-        // after the kneel starts, i.e. the frozen aim pose) and the kneel is rebuilt from it every frame - absolute, so it neither drifts when
-        // the Animator stops writing (culled off screen) nor fights the burst animation's upper body.
-        public static void LateTick()
-        {
-            if (_npcs.Count == 0) return;
-            foreach (var kv in _npcs)
-            {
-                var n = kv.Value;
-                if (!n.Crouched || n.Owner == null || n.Rig != null) continue;
-                if (n.Hips == null || n.LUpLeg == null || n.LLeg == null || n.RUpLeg == null || n.RLeg == null) { n.Crouched = false; continue; }
-                if (!n.PoseCaptured)
-                {
-                    n.PoseCaptured = true;
-                    n.HipsLocal = n.Hips.localPosition;
-                    n.LUpLegRot = n.LUpLeg.localRotation; n.LLegRot = n.LLeg.localRotation;
-                    n.RUpLegRot = n.RUpLeg.localRotation; n.RLegRot = n.RLeg.localRotation;
-                }
-                Vector3 right = n.T.right;
-                var hp = n.Hips.parent;
-                n.Hips.localPosition = n.HipsLocal + (hp != null ? hp.InverseTransformVector(Vector3.down * n.Drop) : Vector3.down * n.Drop);
-                n.LUpLeg.localRotation = n.LUpLegRot; n.LLeg.localRotation = n.LLegRot;
-                n.RUpLeg.localRotation = n.RUpLegRot; n.RLeg.localRotation = n.RLegRot;
-                Swing(n.LUpLeg, -CrouchFrontThigh, right); Swing(n.LLeg, CrouchFrontKnee, right);
-                Swing(n.RUpLeg, CrouchBackThigh, right); Swing(n.RLeg, CrouchBackKnee, right);
-            }
-        }
-
-        // the kneeling pose, degrees about the body's right axis (minus = forward/up for a thigh; plus bends a knee back)
-        private const float CrouchFrontThigh = 90f, CrouchFrontKnee = 90f, CrouchBackThigh = 15f, CrouchBackKnee = 100f;
+        public static void LateTick() { }      // (1.1.2) nothing left to do after the Animator: the bone-bent kneel is gone
 
         // [Debug] BrainLog, at a stuck: what is in front of the body (any layer, triggers too) - names the thing the feelers missed
         private static void LogAhead(Npc n)
