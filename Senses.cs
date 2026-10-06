@@ -40,13 +40,13 @@ namespace NPCAI
     internal static class Senses
     {
         internal enum Src { None = 0, Engine = 1, Thrown = 2, Gunshot = 3, Shout = 4, Hit = 5, Vision = 6 }
-        internal enum State { Idle, Combat, Investigate, Search }
+        internal enum State { Idle, Combat, Investigate, Search, Hide }   // Hide (1.1.0): in cover - keeps its target, takes no ghosts until the brain ends the cover
 
-        // Ranks (Denis): VISION > GUNSHOT > SHOUT > CAR. Sight (own, or passed on by a friend's shout) is vision; a gunshot, a bullet hitting,
-        // an explosion or a thrown item rank as a gunshot; an enemy's shout (an NPC's, or the player's shout key) below that; the engine last.
+        // Ranks (1.1.0, two classes): SEEN (a sighting, a hit) beats HEARD (a gunshot, an explosion, a shout, an engine, a thrown item);
+        // within a class the newest news wins (Assign). A shout passes on a HEARD-class ghost.
         internal static int Rank(Src s)
         {
-            switch (s) { case Src.None: return 0; case Src.Engine: return 1; case Src.Shout: return 2; case Src.Vision: return 4; default: return 3; }
+            switch (s) { case Src.None: return 0; case Src.Vision: case Src.Hit: return 2; default: return 1; }
         }
 
         internal sealed class Ghost
@@ -65,10 +65,14 @@ namespace NPCAI
             public HashSet<string> BaseHostile; public PlayMakerFSM PlayerIsEnemy;   // the prefab's own enemies, and its faction-relation FSM (Coyotes)
             public State State; public GameObject Target; public Ghost Ghost; public Src GhostPrio;
             public float SeenFor, UnseenFor, SearchUntil, NextLook, Stagger, LastLog, InvestigateUntil, InvestigateSince; public Vector3 LastSeen;
-            public GameObject Pursue; public int Pursuits;     // the target it lost from sight, and how many more times it will go to where that target really is
+            public GameObject Pursue; public int Pursuits, PursuitsTotal;     // the target it lost from sight, and how many more guesses it will make about where it went
+            public bool Tracker;          // a hound / four-legged mutant: follows the real position, never a guess
+            public float NextShout;       // the combat shout (taunt): not before this
+            public Vector3 LastSeenVel;   // the target's velocity when last seen (the first guess goes that way)
             public Behaviour[] Sensors; public bool SensorsOff;
             public bool InStorm;          // inside a sandstorm (refreshed once a second)
             public bool Blown;            // within a tornado funnel's shove radius (refreshed once a second)
+            public GameObject FlankObj; public Vector3 FlankPos; public bool Flanking;   // (1.1.0) a human goes to a ghost via a point to one side of it first
             public readonly Dictionary<int, float> Done = new Dictionary<int, float>();   // ghosts it reached (id -> the ghost's Moved then): never given again unless the ghost has newer news
             public readonly HashSet<int> Heard = new HashSet<int>();   // ghosts it already got from a friend's shout, and enemy shouters (instance ids, negated) it already went to: a shout never re-sends them
         }
@@ -98,10 +102,11 @@ namespace NPCAI
         public static void OnSceneLoaded()
         {
             foreach (var g in _ghosts) if (g.Obj != null) UnityEngine.Object.Destroy(g.Obj);
+            foreach (var kv in _agents) if (kv.Value.FlankObj != null) UnityEngine.Object.Destroy(kv.Value.FlankObj);
             _ghosts.Clear(); _agents.Clear(); _ignored.Clear(); _hpOf.Clear(); _prefabOf.Clear(); _presentTags.Clear(); Nwh.Clear();
             _player = null; _playerHead = null; _playerCar = null; _flashlight = null; _inCarFsm = null; _grabFsm = null; _thrown = null;
             Storm.Reset();
-            _hornFsm = null;
+            _hornFsm = null; _azure = null; _nextAzureFind = 0f;
             Persist.ResetForScene();
         }
 
@@ -119,7 +124,7 @@ namespace NPCAI
                 foreach (var kv in _agents)
                 {
                     var a = kv.Value;
-                    if (a.Owner == null) { if (a.Ghost != null) { a.Ghost.Holders.Remove(a); } _dead.Add(kv.Key); }
+                    if (a.Owner == null) { if (a.Ghost != null) { a.Ghost.Holders.Remove(a); } if (a.FlankObj != null) UnityEngine.Object.Destroy(a.FlankObj); _dead.Add(kv.Key); }
                     else
                     {
                         if (!on && a.SensorsOff) Sensors(a, true);
@@ -139,7 +144,8 @@ namespace NPCAI
                 {
                     var g = _ghosts[i];
                     g.Holders.RemoveAll(h => h.Owner == null);
-                    if (g.Holders.Count == 0 || now - g.Moved > 600f) KillGhost(i);     // nobody wants it, or no news about it for 10 min
+                    // nobody wants it, or no news about it for 10 min (a restore in progress keeps its ghosts until their NPCs register)
+                    if ((g.Holders.Count == 0 && !Persist.Restoring) || now - g.Moved > 600f) KillGhost(i);
                 }
                 FindPlayer();
             }
@@ -183,7 +189,8 @@ namespace NPCAI
                 else if (now >= Mathf.Max(a.InvestigateSince, a.Ghost.Moved) + Mathf.Max(5f, Plugin.GhostTimeout.Value))
                 { Log(a, "ghost #" + a.Ghost.Id + " went stale (" + Plugin.GhostTimeout.Value.ToString("0") + " s without news, " + to.magnitude.ToString("0") + " m left), searches from here"); Arrived(a, now); }
             }
-            if (a.State == State.Combat && a.Target == null) { a.State = State.Idle; Log(a, "target gone"); }
+            if ((a.State == State.Combat || a.State == State.Hide) && a.Target == null) { a.State = State.Idle; Log(a, "target gone"); }
+            if (a.Flanking && a.State == State.Investigate && (a.FlankPos - a.T.position).sqrMagnitude <= 9f) EndFlank(a);   // at the flank point: on to the ghost itself
 
             // candidates: the player (if this faction hunts players) and every other NPC of a hostile faction
             float d2max = Plugin.SightRange.Value * Plugin.SightRange.Value;
@@ -213,16 +220,22 @@ namespace NPCAI
                 a.UnseenFor = 0f;
                 a.SeenFor += interval;
                 a.LastSeen = best.transform.position;
+                a.LastSeenVel = VelocityOf(best);
                 if (a.State != State.Combat || a.Target != best)
                 {
-                    if (a.SeenFor >= Mathf.Max(0f, Plugin.NoticeSeconds.Value)) Engage(a, best);
+                    // noticing takes longer at a distance and in the dark: NoticeSeconds up close (<= 15 m), NoticeFar at the edge of sight,
+                    // and up to twice that in full darkness
+                    float d = Mathf.Sqrt(bestD), range = Mathf.Max(16f, Plugin.SightRange.Value);
+                    float need = Mathf.Lerp(Mathf.Max(0f, Plugin.NoticeSeconds.Value), Mathf.Max(Plugin.NoticeSeconds.Value, Plugin.NoticeFar.Value), Mathf.Clamp01((d - 15f) / (range - 15f)));
+                    need *= 2f - LightLevel();
+                    if (a.SeenFor >= need) Engage(a, best);
                 }
             }
             else
             {
                 a.SeenFor = Mathf.Max(0f, a.SeenFor - interval);
                 a.UnseenFor += interval;
-                if (a.State == State.Combat && a.UnseenFor > Mathf.Max(0f, Plugin.LoseSeconds.Value)) LoseTarget(a, now);
+                if (a.State == State.Combat && a.UnseenFor > Mathf.Max(0f, Plugin.LoseSeconds.Value)) LoseTarget(a, now);   // in Hide it keeps the target (the brain ends the cover)
             }
         }
 
@@ -316,52 +329,81 @@ namespace NPCAI
             return dark + (max - dark) * L;
         }
 
-        // 0 = full night, 1 = full day, from Enviro's main light (EnviroSkyLite.instance.MainLight.intensity between the moon and sun
-        // settings); the reference is tunable ([Senses] DaylightIntensity, 0 = Enviro's own sun setting). Cached for 0.5 s.
-        private static Type _enviroType; private static PropertyInfo _enviroInst; private static FieldInfo _mainLight, _lightSettings, _sunI, _moonI; private static bool _enviroTried;
+        // 0 = full night, 1 = full day, by the game's clock (Azure[Sky]'s AzureTimeController.GetTimeline(), hours 0-24; found in the
+        // scene once per 10 s until it is, reset per scene). [Senses] NightHours is a list of hour=percent points, linear in between,
+        // wrapping at midnight (Denis, 2026-10-06: 21 h a bit darker, 22 twilight, 23 night, 4 twilight, 5 like 21, 6 bright). No Azure:
+        // full day. Cached for 0.5 s; VerboseLog prints the reading every minute.
+        private static Type _azureType; private static MethodInfo _azureTime; private static Behaviour _azure; private static bool _azureTried; private static float _nextAzureFind;
+        private static float[] _nightH, _nightV; private static string _nightSrc;
         internal static float LightLevel()
         {
             if (Time.time - _lightAt < 0.5f) return _lightCache;
             _lightAt = Time.time;
-            float level = 1f, intensity = -1f, sun = 1f, moon = 0f;
+            float level = 1f, hour = -1f;
             try
             {
-                if (!_enviroTried)
-                {
-                    _enviroTried = true;
-                    foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
-                    {
-                        _enviroType = asm.GetType("EnviroSkyLite");
-                        if (_enviroType != null) break;
-                    }
-                    if (_enviroType != null)
-                    {
-                        _enviroInst = _enviroType.GetProperty("instance", BindingFlags.Public | BindingFlags.Static);
-                        _mainLight = Field(_enviroType, "MainLight"); _lightSettings = Field(_enviroType, "lightSettings");
-                        if (_lightSettings != null) { _sunI = Field(_lightSettings.FieldType, "directLightSunIntensity"); _moonI = Field(_lightSettings.FieldType, "directLightMoonIntensity"); }
-                    }
-                }
-                object inst = _enviroInst != null ? _enviroInst.GetValue(null, null) : null;
-                var light = inst != null && _mainLight != null ? _mainLight.GetValue(inst) as Light : null;
-                if (light == null) light = RenderSettings.sun;
-                if (light != null)
-                {
-                    intensity = light.intensity;
-                    object ls = inst != null && _lightSettings != null ? _lightSettings.GetValue(inst) : null;
-                    if (ls != null) { if (_sunI != null) sun = Convert.ToSingle(_sunI.GetValue(ls)); if (_moonI != null) moon = Convert.ToSingle(_moonI.GetValue(ls)); }
-                    if (Plugin.DaylightIntensity.Value > 0f) sun = Plugin.DaylightIntensity.Value;
-                    float elev = Mathf.Clamp01(Vector3.Dot(-light.transform.forward, Vector3.up) * 3f);   // the light below the horizon counts for nothing
-                    level = Mathf.Clamp01((intensity - moon) / Mathf.Max(0.01f, sun - moon)) * elev;
-                }
+                var az = Azure();
+                if (az != null) { hour = Convert.ToSingle(_azureTime.Invoke(az, null)); level = NightTable(hour); }
             }
-            catch (Exception e) { Plugin.Verbose("Senses: light read failed: " + e.Message); }
+            catch (Exception e) { Plugin.Verbose("Senses: clock read failed: " + e.Message); }
             _lightCache = level;
             if (Plugin.VerboseLog.Value && Time.time >= _nextLightLog)
             {
                 _nextLightLog = Time.time + 60f;
-                Plugin.Log.LogInfo("Senses: light " + level.ToString("0.00") + " (main light " + intensity.ToString("0.00") + ", sun " + sun + ", moon " + moon + ") -> sight " + SightRange().ToString("0") + " m");
+                Plugin.Log.LogInfo("Senses: light " + level.ToString("0.00") + (hour >= 0f ? " at " + hour.ToString("0.0") + " h" : " (no clock)") + " -> sight " + SightRange().ToString("0") + " m");
             }
             return level;
+        }
+
+        private static float NightTable(float hour)
+        {
+            string cfg = Plugin.NightHours.Value ?? "";
+            if (_nightH == null || _nightSrc != cfg)
+            {
+                _nightSrc = cfg;
+                var pts = new List<KeyValuePair<float, float>>();
+                foreach (var part in cfg.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries))
+                {
+                    int eq = part.IndexOfAny(new[] { '=', ':' }); float h, v;
+                    if (eq > 0 && float.TryParse(part.Substring(0, eq).Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out h) && float.TryParse(part.Substring(eq + 1).Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out v))
+                        pts.Add(new KeyValuePair<float, float>(Mathf.Repeat(h, 24f), Mathf.Clamp01(v / 100f)));
+                }
+                pts.Sort((x, y) => x.Key.CompareTo(y.Key));
+                _nightH = new float[pts.Count]; _nightV = new float[pts.Count];
+                for (int i = 0; i < pts.Count; i++) { _nightH[i] = pts[i].Key; _nightV[i] = pts[i].Value; }
+            }
+            int n = _nightH.Length;
+            if (n == 0) return 1f;
+            if (n == 1) return _nightV[0];
+            hour = Mathf.Repeat(hour, 24f);
+            for (int i = 0; i < n; i++)
+            {
+                int j = (i + 1) % n;
+                float h0 = _nightH[i], h1 = _nightH[j], span = h1 - h0; if (span <= 0f) span += 24f;     // the last segment wraps midnight
+                float t = hour - h0; if (t < 0f) t += 24f;
+                if (t <= span) return Mathf.Lerp(_nightV[i], _nightV[j], span > 0f ? t / span : 0f);
+            }
+            return _nightV[0];
+        }
+
+        private static Behaviour Azure()
+        {
+            if (_azure != null) return _azure;
+            if (!_azureTried)
+            {
+                _azureTried = true;
+                foreach (var asm in AppDomain.CurrentDomain.GetAssemblies()) { _azureType = asm.GetType("UnityEngine.AzureSky.AzureTimeController"); if (_azureType != null) break; }
+                if (_azureType != null) _azureTime = _azureType.GetMethod("GetTimeline", Type.EmptyTypes);
+                if (_azureTime == null) _azureType = null;
+            }
+            if (_azureType == null || Time.unscaledTime < _nextAzureFind) return null;
+            _nextAzureFind = Time.unscaledTime + 10f;
+            foreach (var o in Resources.FindObjectsOfTypeAll(_azureType))
+            {
+                var b = o as Behaviour;
+                if (b != null && b.gameObject.scene.IsValid() && b.isActiveAndEnabled) { _azure = b; break; }
+            }
+            return _azure;
         }
 
         private static FieldInfo Field(Type t, string name)
@@ -388,9 +430,11 @@ namespace NPCAI
         // ---------- knowledge ----------
         private static void Engage(Agent a, GameObject target)
         {
-            if (a.State == State.Combat && a.Target == target) return;
+            if ((a.State == State.Combat || a.State == State.Hide) && a.Target == target) return;
+            if (a.State == State.Hide) { a.Target = target; a.UnseenFor = 0f; return; }   // in cover: it knows its target, stays put
             Release(a);
             a.State = State.Combat; a.Target = target; a.UnseenFor = 0f; a.Pursuits = 0; a.Pursue = null; a.Heard.RemoveWhere(x => x < 0);
+            a.NextShout = 0f;       // a fresh sighting: the next shout comes at once
             Log(a, "sees " + Name(target) + " at " + Vector3.Distance(a.T.position, target.transform.position).ToString("0") + " m");
         }
 
@@ -403,8 +447,8 @@ namespace NPCAI
             a.State = State.Idle;
             Assign(a, g, Src.Vision, now);
             a.Pursue = target;
-            a.Pursuits = UnityEngine.Random.Range(Mathf.Max(0, Plugin.PursuitMin.Value), Mathf.Max(Plugin.PursuitMin.Value, Plugin.PursuitMax.Value) + 1);
-            Log(a, "lost sight of " + Name(target) + ", goes where it was (ghost #" + g.Id + ", will follow " + a.Pursuits + " more time(s))");
+            a.Pursuits = a.PursuitsTotal = Mathf.Max(0, Plugin.Guesses.Value);
+            Log(a, "lost sight of " + Name(target) + ", goes where it was (ghost #" + g.Id + ", will " + (a.Tracker ? "track it" : "guess") + " " + a.Pursuits + " more time(s))");
         }
 
         private static void Arrived(Agent a, float now)
@@ -415,15 +459,55 @@ namespace NPCAI
             if (a.Pursuits > 0 && a.Pursue != null && a.Ghost != null && a.Ghost.Subject == a.Pursue)
             {
                 a.Pursuits--;
+                int k = a.PursuitsTotal - a.Pursuits;        // 1, 2, 3 ...: each guess is rougher than the last
                 Vector3 real = a.Pursue.transform.position;
-                var g = GetOrMake(Src.Vision, real, a.Pursue, "where " + Name(a.Pursue) + " really is", 2f, 1f, now);
+                // a tracker (hound, four-legged mutant) follows the real position; a human guesses: where the target was going when it was last
+                // seen, plus a growing miss (GuessRadius x k), on the ground
+                Vector3 spot = a.Tracker ? real : Guess(real, a.LastSeenVel, k);
+                var g = a.Tracker ? GetOrMake(Src.Vision, spot, a.Pursue, "where " + Name(a.Pursue) + " really is", 2f, 1f, now)
+                                  : GetOrMake(Src.Vision, spot, null, "guess " + k + " about " + Name(a.Pursue), 0f, 0f, now);   // its own guess, not shared, not merged
                 g.Subject = a.Pursue;
                 a.State = State.Idle;
-                if (Assign(a, g, Src.Vision, now)) { Log(a, "reached ghost without seeing " + Name(a.Pursue) + ", follows to where it is now (ghost #" + g.Id + ", " + a.Pursuits + " left)"); return; }
+                if (Assign(a, g, Src.Vision, now)) { Log(a, "reached ghost without seeing " + Name(a.Pursue) + ", " + (a.Tracker ? "follows to where it is now" : "guesses where it went (" + Vector3.Distance(spot, real).ToString("0") + " m off)") + " (ghost #" + g.Id + ", " + a.Pursuits + " left)"); return; }
             }
             a.State = State.Search; a.SearchUntil = now + Mathf.Max(0f, Plugin.SearchSeconds.Value);
             Log(a, "reached ghost #" + (a.Ghost != null ? a.Ghost.Id.ToString() : "?") + ", looks around for " + Plugin.SearchSeconds.Value.ToString("0") + " s");
             if (a.Ghost != null) RetireIfSearched(a.Ghost);
+        }
+
+        // a guess k about where a lost target went: 1.5 s along the way it was going, then a random miss of GuessRadius x k, on the ground
+        private static Vector3 Guess(Vector3 real, Vector3 vel, int k)
+        {
+            vel.y = 0f;
+            if (vel.sqrMagnitude > 1f) real += vel.normalized * Mathf.Min(vel.magnitude, 8f) * 1.5f;
+            float r = Mathf.Max(0f, Plugin.GuessRadius.Value) * Mathf.Max(1, k);
+            Vector2 off = UnityEngine.Random.insideUnitCircle * r;
+            return OnGround(real + new Vector3(off.x, 0f, off.y), real.y);
+        }
+
+        // a sound / a hit is only roughly located: the direction is right, the distance is off by up to a share of itself
+        private static Vector3 Fuzz(Vector3 pos, Vector3 from, float share)
+        {
+            Vector3 d = pos - from; d.y = 0f;
+            float dist = d.magnitude;
+            if (dist < 3f || share <= 0f) return pos;
+            Vector3 along = d / dist, side = new Vector3(along.z, 0f, -along.x);
+            return OnGround(pos + along * dist * UnityEngine.Random.Range(-share, share) + side * dist * UnityEngine.Random.Range(-share, share), pos.y);
+        }
+
+        private static Vector3 OnGround(Vector3 p, float refY)
+        {
+            RaycastHit h;
+            if (Physics.Raycast(new Vector3(p.x, refY + 3f, p.z), Vector3.down, out h, 8f, (1 << 0) | (1 << 14), QueryTriggerInteraction.Ignore)) return h.point;
+            return new Vector3(p.x, refY, p.z);
+        }
+
+        private static Vector3 VelocityOf(GameObject go)
+        {
+            var rb = go != null ? go.GetComponent<Rigidbody>() : null;
+            if (rb != null) return rb.velocity;
+            var cc = go != null ? go.GetComponent<CharacterController>() : null;
+            return cc != null ? cc.velocity : Vector3.zero;
         }
 
         // (1.4.10) a search that found nothing: the NPC gives up and tells its friends (same faction, humans, within AllClearRange) who are on
@@ -470,7 +554,7 @@ namespace NPCAI
         // check a shout about the player; the player now shoots elsewhere: that is where the player is). Never while it sees its target.
         private static bool Assign(Agent a, Ghost g, Src prio, float now)
         {
-            if (g == null || a.State == State.Combat || g.Retired) return false;
+            if (g == null || a.State == State.Combat || a.State == State.Hide || g.Retired) return false;
             float doneAt;
             if (a.Done.TryGetValue(g.Id, out doneAt) && g.Moved <= doneAt + 0.01f) return false;   // been there, nothing new about it
             if (a.Ghost == g)
@@ -488,8 +572,37 @@ namespace NPCAI
             a.Ghost = g; a.GhostPrio = prio; g.Holders.Add(a);
             a.State = State.Investigate; a.SeenFor = 0f;
             Budget(a, g);
+            StartFlank(a, g);
             return true;
         }
+
+        // (1.1.0) flanking: a human going to check a spot more than FlankDistance away does not walk straight at it - it goes to a point
+        // FlankWidth m to one side first (the side alternates between NPCs, so two of them come around both sides), then to the spot.
+        // The Detection target meanwhile is a hidden object at that point (the brain / Idle walk to it like to a ghost). Trackers go straight.
+        private static void StartFlank(Agent a, Ghost g)
+        {
+            a.Flanking = false;
+            if (!a.Human || a.Tracker || Plugin.FlankWidth.Value <= 0f) return;
+            Vector3 to = g.Pos - a.T.position; to.y = 0f;
+            float d = to.magnitude;
+            if (d < Mathf.Max(5f, Plugin.FlankDistance.Value)) return;
+            Vector3 side = new Vector3(to.z, 0f, -to.x) / d * ((a.Owner.GetInstanceID() & 1) == 0 ? 1f : -1f);
+            Vector3 p = OnGround(a.T.position + to * 0.6f + side * Plugin.FlankWidth.Value, g.Pos.y);
+            if (a.FlankObj == null) { a.FlankObj = new GameObject("NPCAI.Flank") { hideFlags = HideFlags.HideAndDontSave }; if (_ghostRoot != null) a.FlankObj.transform.SetParent(_ghostRoot, false); }
+            a.FlankObj.transform.position = p; a.FlankPos = p; a.Flanking = true;
+            Log(a, "flanks ghost #" + g.Id + " via a point " + Plugin.FlankWidth.Value.ToString("0") + " m to the " + (side.x * to.z - side.z * to.x > 0f ? "right" : "left"));
+        }
+        private static void EndFlank(Agent a) { a.Flanking = false; }
+
+        // where the NPC is walking to right now: its flank point, else its ghost (Idle's ghost walk and the brain agree with Known())
+        internal static bool GoalOf(GameObject owner, out Vector3 goal)
+        {
+            var a = Get(owner); goal = Vector3.zero;
+            if (a == null || a.Ghost == null) return false;
+            goal = a.Flanking ? a.FlankPos : a.Ghost.Pos;
+            return true;
+        }
+        internal static bool IsFlanking(GameObject owner) { var a = Get(owner); return a != null && a.Flanking; }
 
         // time allowed to reach a ghost before searching from wherever the NPC got to (unreachable spots, a cave with no way out)
         private static void Budget(Agent a, Ghost g)
@@ -510,6 +623,7 @@ namespace NPCAI
 
         private static void Release(Agent a)
         {
+            a.Flanking = false;
             var g = a.Ghost;
             a.Ghost = null; a.GhostPrio = Src.None;
             if (g == null) return;
@@ -566,11 +680,27 @@ namespace NPCAI
         }
 
         // ---------- sounds ----------
-        // one ghost per event, offered to every NPC within the radius (walls halve the radius with [Senses] MuffleSounds)
+        // one ghost per event, offered to every NPC within the radius
+        private static readonly List<Agent> _responders = new List<Agent>();
         private static void Noise(GameObject source, Vector3 pos, float radius, Src src, string about, Func<Agent, bool> filter, Func<Agent, Vector3> at, GameObject subject = null, Action<Agent> told1 = null)
         {
             if (radius <= 0f || !On) return;
             float now = Time.time;
+            // a gunshot / blast does not pull a whole camp: the nearest GunshotResponders go (and everyone within GunshotNearRange); the rest
+            // only hear it (nothing for them yet)
+            HashSet<Agent> allowed = null;
+            if (src == Src.Gunshot && Plugin.GunshotResponders.Value > 0)
+            {
+                _responders.Clear();
+                float near2 = Plugin.GunshotNearRange.Value * Plugin.GunshotNearRange.Value, r2a = radius * radius;
+                foreach (var kv in _agents) { var a = kv.Value; if (a.Owner != null && a.T.parent == null && (a.T.position - pos).sqrMagnitude <= r2a && (filter == null || filter(a))) _responders.Add(a); }
+                if (_responders.Count > Plugin.GunshotResponders.Value)
+                {
+                    _responders.Sort((x, y) => (x.T.position - pos).sqrMagnitude.CompareTo((y.T.position - pos).sqrMagnitude));
+                    allowed = new HashSet<Agent>();
+                    for (int i = 0; i < _responders.Count; i++) if (i < Plugin.GunshotResponders.Value || (_responders[i].T.position - pos).sqrMagnitude <= near2) allowed.Add(_responders[i]);
+                }
+            }
             Transform sroot = source != null ? source.transform.root : null;
             // An event about the player (the player's shots, shouts, engine, thrown items; an NPC shooting or shouting at the player) means
             // nothing to an NPC whose faction is at peace with the player (Coyotes towns): it only alerts NPCs hostile to the player. Hits
@@ -593,13 +723,9 @@ namespace NPCAI
                 if (d2 > r2) continue;
                 if (stormy && (srcStorm || a.InStorm) && d2 > rs2) continue;
                 if (filter != null && !filter(a)) continue;
+                if (allowed != null && !allowed.Contains(a)) continue;
                 if (aboutPlayer && !a.Hostile.Contains("Player")) continue;
                 if (a.Blown) continue;                                      // the tornado's roar: hears nothing
-                if (Plugin.MuffleSounds.Value && !Clear(pos + Vector3.up, Eye(a), a.T))
-                {
-                    float m = radius * Mathf.Clamp01(Plugin.MuffleFactor.Value / 100f);
-                    if (d2 > m * m) continue;
-                }
                 Ghost g = shared;
                 if (g == null) { g = GetOrMake(src, at(a), source, about, 0f, 1f, now); g.Subject = subject; }
                 if (Assign(a, g, src, now)) { told++; if (told1 != null) told1(a); }
@@ -625,7 +751,7 @@ namespace NPCAI
             var sa = Get(source.transform.root.gameObject);
             if (sa != null)
             {
-                if (sa.State == State.Combat && IsPlayer(sa.Target)) return true;
+                if ((sa.State == State.Combat || sa.State == State.Hide) && IsPlayer(sa.Target)) return true;
                 if (sa.Ghost != null && IsPlayer(sa.Ghost.Subject)) return true;
                 return false;
             }
@@ -635,12 +761,16 @@ namespace NPCAI
         }
 
         // Tracers: a gun fired (the player's or an NPC's), once per shot (pellets of one blast merge through the 1 s source window)
+        internal static float LastPlayerShotAt = -100f;     // for the brain: a quiet player is reloading or hiding
         internal static void Shot(GameObject shooter, Vector3 pos, WeaponRanges.Kind kind, bool player)
         {
+            if (player) LastPlayerShotAt = Time.time;
             if (!On) return;
             float radius = player ? PlayerShotRange(kind) : NpcShotRange(shooter, kind);
             string about = Plugin.SensesLog.Value || Plugin.ShowGhosts.Value ? (player ? "player" : Name(shooter)) + " " + kind.ToString().ToLowerInvariant() : "gunshot";
-            Noise(shooter, pos, radius, Src.Gunshot, about, null, null, shooter);
+            // a shot is heard, not seen: the spot is 2-4 m off (merged per shooter within 1 s, so a burst makes one ghost)
+            Vector2 off = UnityEngine.Random.insideUnitCircle.normalized * UnityEngine.Random.Range(2f, 4f);
+            Noise(shooter, OnGround(pos + new Vector3(off.x, 0f, off.y), pos.y), radius, Src.Gunshot, about, null, null, shooter);
         }
 
         private static float PlayerShotRange(WeaponRanges.Kind k)
@@ -724,8 +854,19 @@ namespace NPCAI
                 if (fsm.Name == "INPUT_Horn") { _hornFsm = fsm; _hornAt = Time.time; return true; }    // the player's car horn starts (Engine() picks it up)
                 if (fsm.Name != "Sound" || fsm.ActiveStateName != "attack") return true;
                 var a = Get(fsm.GameObject);
-                if (a == null || !a.Human || Plugin.TauntRange.Value <= 0f) return true;
-                Taunt(a);
+                if (a == null) return true;
+                // The game's Sound FSM shouts every 0.1-4 s for as long as the NPC has any target, a ghost included. Here a shout only
+                // when it sees its target right now, the first time at once, then every TauntMin..TauntMax s; a suppressed shout
+                // ends the state at once (the FSM keeps cycling, silent).
+                float now = Time.time;
+                if (!SeesNow(a) || now < a.NextShout)
+                {
+                    if (__instance.finishedEvent != null) fsm.Event(__instance.finishedEvent);
+                    __instance.Finish();
+                    return false;
+                }
+                a.NextShout = now + UnityEngine.Random.Range(Mathf.Max(1f, Plugin.TauntMin.Value), Mathf.Max(Plugin.TauntMin.Value, Plugin.TauntMax.Value));
+                if (a.Human && Plugin.TauntRange.Value > 0f) Taunt(a);
             }
             catch (Exception e) { Plugin.Log.LogError("Senses: " + e); }
             return true;
@@ -736,17 +877,17 @@ namespace NPCAI
             float now = Time.time, range = Plugin.TauntRange.Value;
             // friends: where the shouter's target is (or the ghost the shouter is going to)
             Vector3 where; bool known = false; Ghost tg = null;
-            if (t.State == State.Combat && t.Target != null) { where = t.Target.transform.position; known = true; }
+            if ((t.State == State.Combat || t.State == State.Hide) && t.Target != null) { where = Fuzz(t.Target.transform.position, t.T.position, 0.2f); known = true; }   // "over there!": roughly
             else if (t.Ghost != null && t.State == State.Investigate && !t.Ghost.Retired) { where = t.Ghost.Pos; tg = t.Ghost; known = true; }   // a searcher found nothing: nothing to pass on
             else where = t.T.position;
             if (known)
             {
                 string tag = t.Tag;
                 Ghost shared = tg;
-                // a shout is not a ghost of its own: it passes on what the shouter knows - what it sees (a VISION ghost at the target) or the
-                // very ghost it is going to, at that ghost's rank (a gunshot it is checking stays a GUNSHOT)
-                if (shared == null) { shared = GetOrMake(Src.Vision, where, t.Target, Name(t.Owner) + " saw " + Name(t.Target), 4f, 15f, now); shared.Subject = t.Target; }   // one ghost per sighting: shouts (every few s) refresh it instead of minting new ones
-                Src relay = tg == null ? Src.Vision : t.GhostPrio;
+                // a shout passes on roughly what the shouter sees (a SHOUT-rank ghost near the target: friends go and look, they do not get a
+                // live position) or the very ghost it is going to, at that ghost's rank
+                if (shared == null) { shared = GetOrMake(Src.Shout, where, t.Target, Name(t.Owner) + " shouted about " + Name(t.Target), 6f, 15f, now); shared.Subject = t.Target; }   // one ghost per sighting: shouts refresh it instead of minting new ones
+                Src relay = tg == null ? Src.Shout : t.GhostPrio;
                 int told = 0;
                 foreach (var kv in _agents)
                 {
@@ -912,9 +1053,14 @@ namespace NPCAI
         {
             if (!On || victim == null || attacker == null) return;
             var a = Get(victim.transform.root.gameObject);
-            if (a == null || a.State == State.Combat || a.Blown) return;
+            if (a == null) return;
+            Brain.Hit(a.Owner);
+            if (a.State == State.Combat || a.State == State.Hide || a.Blown) return;
             float now = Time.time;
-            var g = GetOrMake(Src.Hit, attacker.transform.root.position, attacker.transform.root.gameObject, "hit by " + Name(attacker), 0f, 1f, now);
+            // it knows the direction the hit came from; the distance only roughly (trackers: exactly)
+            Vector3 from = attacker.transform.root.position;
+            if (!a.Tracker) from = Fuzz(from, a.T.position, 0.15f);
+            var g = GetOrMake(Src.Hit, from, attacker.transform.root.gameObject, "hit by " + Name(attacker), 0f, 1f, now);
             g.Subject = attacker.transform.root.gameObject;
             bool had = a.Ghost == g;
             if (Assign(a, g, Src.Hit, now)) { if (!had) Log(a, "is hit by " + Name(attacker) + ", goes for ghost #" + g.Id); }   // once per shot, not per pellet
@@ -1069,7 +1215,8 @@ namespace NPCAI
                 if (fsm == null || fsm.Name != "Attack") return true;
                 var a = Get(fsm.GameObject);
                 if (a == null) return true;
-                bool vis = a.State == State.Combat && a.Target != null && a.UnseenFor <= Mathf.Max(0f, Plugin.LoseSeconds.Value);
+                // seen within the last two looks AND a clear line right now: no bursts through the wall you just stepped behind
+                bool vis = SeesNow(a);
                 if (__instance.storeVisibility != null && !__instance.storeVisibility.IsNone) __instance.storeVisibility.Value = vis ? 1f : 0f;
                 if (__instance.storeIsVisible != null && !__instance.storeIsVisible.IsNone) __instance.storeIsVisible.Value = vis;
                 return false;
@@ -1077,12 +1224,25 @@ namespace NPCAI
             catch (Exception e) { Plugin.Log.LogError("Senses: " + e); return true; }
         }
 
+        // the target is in sight right now: seen within the last two looks and a clear line from the eyes to its head or body
+        private static bool SeesNow(Agent a)
+        {
+            if ((a.State != State.Combat && a.State != State.Hide) || a.Target == null || a.UnseenFor > 0.35f) return false;
+            bool isPlayer = a.Target == _player;
+            if (isPlayer && a.Target.layer == 5) return false;
+            Vector3 head, body;
+            Points(a.Target, isPlayer, out head, out body);
+            Vector3 eye = Eye(a); Transform troot = a.Target.transform.root;
+            return Clear(eye, head, troot) || Clear(eye, body, troot);
+        }
+
         private static GameObject Known(Agent a)
         {
             switch (a.State)
             {
-                case State.Combat: if (a.Target == null) { a.State = State.Idle; return null; } return a.Target;
-                case State.Investigate:
+                case State.Combat:
+                case State.Hide: if (a.Target == null) { a.State = State.Idle; return null; } return a.Target;
+                case State.Investigate: return a.Flanking && a.FlankObj != null ? a.FlankObj : a.Ghost != null ? a.Ghost.Obj : null;
                 case State.Search: return a.Ghost != null ? a.Ghost.Obj : null;
                 default: return null;
             }
@@ -1094,10 +1254,35 @@ namespace NPCAI
             if (!On) return 0;
             var a = Get(owner);
             if (a == null) return 0;
-            switch (a.State) { case State.Combat: return 1; case State.Investigate: return 2; case State.Search: return 3; default: return 0; }
+            switch (a.State) { case State.Combat: case State.Hide: return 1; case State.Investigate: return 2; case State.Search: return 3; default: return 0; }
         }
         internal static bool IsGhostTarget(GameObject owner) { int k = KindOf(owner); return k == 2 || k == 3; }
-        internal static void ArrivedAt(GameObject owner) { var a = Get(owner); if (a != null && a.State == State.Investigate) Arrived(a, Time.time); }
+        internal static void ArrivedAt(GameObject owner)
+        {
+            var a = Get(owner);
+            if (a == null || a.State != State.Investigate) return;
+            if (a.Flanking) { EndFlank(a); return; }        // that was the flank point: the ghost itself is next
+            Arrived(a, Time.time);
+        }
+
+        // (1.1.0) the brain took the NPC into cover / out of it: Hide keeps the target and ignores every ghost until the cover ends
+        internal static void SetHiding(GameObject owner, bool hiding)
+        {
+            var a = Get(owner);
+            if (a == null) return;
+            if (hiding)
+            {
+                if (a.State == State.Hide) return;
+                if (a.State != State.Combat) { Release(a); a.Target = a.Target ?? _player; }   // covering from a ghost / the game's hide: the player is what it hides from
+                a.State = State.Hide; a.Pursue = null; a.Pursuits = 0;
+                Log(a, "takes cover (keeps its target, ignores ghosts)");
+            }
+            else if (a.State == State.Hide)
+            {
+                a.State = a.Target != null ? State.Combat : State.Idle;
+                Log(a, "leaves cover" + (a.UnseenFor > 0.5f ? " (target not in sight for " + a.UnseenFor.ToString("0") + " s)" : ""));
+            }
+        }
 
         // ---------- Apocapatrol (only when that mod is loaded) ----------
         // A crew that bails out is a fresh NPC spawned beside the car (Patrol.BailOut instantiates the prefab and deletes the seated one), so
@@ -1224,6 +1409,7 @@ namespace NPCAI
             foreach (var f in owner.GetComponents<PlayMakerFSM>()) if (f != null && f.FsmName == "PlayerIsEnemy") { a.PlayerIsEnemy = f; break; }
             Relation(a, false);
             a.Human = IsHuman(a.Tag);
+            a.Tracker = IsTracker(PrefabOf(owner));
             foreach (var t in owner.GetComponentsInChildren<Transform>(true))
             {
                 string n = t.name; int i = n.LastIndexOf(':');
@@ -1264,6 +1450,15 @@ namespace NPCAI
             if (a.Sensors == null) return;
             foreach (var b in a.Sensors) if (b != null) b.enabled = on;
             a.SensorsOff = !on;
+        }
+
+        private static string[] _trackers; private static string _trackersSrc;
+        private static bool IsTracker(string prefab)
+        {
+            string cfg = Plugin.Trackers.Value ?? "";
+            if (_trackers == null || _trackersSrc != cfg) { _trackersSrc = cfg; _trackers = cfg.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries); for (int i = 0; i < _trackers.Length; i++) _trackers[i] = _trackers[i].Trim(); }
+            foreach (var t in _trackers) if (t.Length > 0 && prefab.IndexOf(t, StringComparison.OrdinalIgnoreCase) >= 0) return true;
+            return false;
         }
 
         private static bool IsHuman(string tag)
@@ -1373,7 +1568,8 @@ namespace NPCAI
                 switch (a.State)
                 {
                     case State.Combat: s = "COMBAT " + Name(a.Target); c = SrcColor[(int)Src.Vision]; break;
-                    case State.Investigate: s = "-> ghost #" + (a.Ghost != null ? a.Ghost.Id.ToString() : "?") + " (" + (Rank(a.GhostPrio) == 4 ? "vision" : Rank(a.GhostPrio) == 3 ? "gunshot" : Rank(a.GhostPrio) == 2 ? "shout" : "engine") + ")"; c = a.Ghost != null ? SrcColor[(int)a.Ghost.Src] : Color.white; break;
+                    case State.Hide: s = "HIDING from " + Name(a.Target); c = new Color(0.4f, 0.8f, 1f); break;
+                    case State.Investigate: s = (a.Flanking ? "flanks " : "-> ") + "ghost #" + (a.Ghost != null ? a.Ghost.Id.ToString() : "?") + " (" + (Rank(a.GhostPrio) == 2 ? "seen" : "heard") + ", " + a.GhostPrio.ToString().ToLowerInvariant() + ")"; c = a.Ghost != null ? SrcColor[(int)a.Ghost.Src] : Color.white; break;
                     default: s = "SEARCH " + Mathf.Max(0f, a.SearchUntil - now).ToString("0") + " s"; c = new Color(0.75f, 0.6f, 1f); break;
                 }
                 Vector3 top = a.Col != null ? new Vector3(a.Col.bounds.center.x, a.Col.bounds.max.y, a.Col.bounds.center.z) : a.T.position + Vector3.up * 2f;
@@ -1423,6 +1619,7 @@ namespace NPCAI
         {
             private static PlayMakerFSM _saveLoad; private static string _lastState, _loadSlot; private static float _nextScan; private static bool _restoring, _loadPending;
             private static int _gen;        // bumped by every reset / clear / new load: a running Restore sees it and stops
+            internal static bool Restoring { get { return _restoring; } }
 
             internal static void ResetForScene() { _saveLoad = null; _lastState = null; _loadSlot = null; _restoring = false; _loadPending = false; _nextScan = 0f; _gen++; }
 
@@ -1496,7 +1693,7 @@ namespace NPCAI
                     var a = kv.Value;
                     if (a.Owner == null || a.State == State.Idle) continue;
                     string target = a.Target == null ? "-" : (a.Target == _player ? "Player" : a.Target.name);
-                    sb.Append("agent ").Append(a.Owner.name.Replace(' ', '_')).Append(' ').Append((int)a.State).Append(' ').Append(target.Replace(' ', '_')).Append(' ')
+                    sb.Append("agent ").Append(a.Owner.name.Replace(' ', '_')).Append(' ').Append((int)(a.State == State.Hide ? State.Combat : a.State)).Append(' ').Append(target.Replace(' ', '_')).Append(' ')
                       .Append(a.Ghost != null ? a.Ghost.Id : -1).Append(' ').Append((int)a.GhostPrio).Append(' ').Append(Mathf.Max(0f, a.SearchUntil - now).ToString("0.0", ci)).Append(' ')
                       .Append(a.LastSeen.x.ToString("0.00", ci)).Append(' ').Append(a.LastSeen.y.ToString("0.00", ci)).Append(' ').Append(a.LastSeen.z.ToString("0.00", ci)).Append('\n');
                     n++;

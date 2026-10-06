@@ -88,7 +88,7 @@ namespace NPCAI
 
         internal static bool On { get { return Plugin.NavEnabled != null && Plugin.NavEnabled.Value; } }
 
-        public static void OnSceneLoaded() { _structures.Clear(); _known.Clear(); _baking = null; _debug.Clear(); _floorCols.Clear(); _exits.Clear(); _relaxedFields.Clear(); _pool.Clear(); _player = null; _sweep.Clear(); _nodeKind.Clear(); _lastPickAt = 0f; _vPeak = 0f; _outPlans.Clear(); _outMemo.Clear(); }
+        public static void OnSceneLoaded() { _needed = null; Needed = false; _structures.Clear(); _known.Clear(); _baking = null; _debug.Clear(); _floorCols.Clear(); _exits.Clear(); _relaxedFields.Clear(); _pool.Clear(); _player = null; _sweep.Clear(); _nodeKind.Clear(); _outPlans.Clear(); _outMemo.Clear(); _compRing.Clear(); }
 
         // ---------- discovery + baking (per frame) ----------
         public static void Tick()
@@ -110,80 +110,61 @@ namespace NPCAI
         }
 
         // ---------- which structure to bake, and how fast ----------
-        // Every structure the player could reach before his noise could pull its NPCs out is mapped in time: "relevant" = within the
-        // farthest the player's own noise or sight carries (R, about 150 m); "in time" = the player, at the fastest he moved lately (or a
-        // run), could get within R of it before its bake would finish (estimated from its cell count and the measured cost per cell)
-        // x1.5 + 5 s. The direction does not matter (he could turn). Soonest-needed first; a far more urgent one takes over (the bake in
-        // progress pauses and resumes later). Within [Nav] BakeRange everything is baked as before.
-        private static float _lastPickAt, _vPeak, _vNow, _dtAvg, _msPerCell = 0.026f; private static Vector3 _lastPos;
+        // (1.1.0) Simple: a bake, once started, is finished - dropped only when its root is gone or it is farther than FarDrop. Next in line:
+        // the structure an NPC stands in without a map (Needed, set by Next()), else the nearest unbaked one within BakeRange x 3 of the
+        // player. (The old scheduler predicted the player's speed and each bake's duration and switched whenever another structure looked
+        // 5 s more urgent: while driving or flying none of ~100 found structures ever finished - probe 2026-10-06.)
+        private static float _dtAvg, _msPerCell = 0.026f;      // _msPerCell: measured bake cost, for the log
         private static bool _urgent;
-        private const float MaxBakeDistance = 2500f;
-
-        private static float Relevance()
+        private const float NearPreempt = 60f, FarDrop = 1500f;
+        internal static bool Needed;      // set by Next(): an NPC asked for a route inside a structure that is not baked yet
+        private static Structure _needed;
+        private static float Dist(Structure s, Vector3 pp)
         {
-            float r = Mathf.Max(Plugin.SightRange.Value, Plugin.PlayerShoutRange.Value);
-            r = Mathf.Max(r, Mathf.Max(Plugin.ShotRangePistol.Value, Plugin.ShotRangeSmg.Value));
-            r = Mathf.Max(r, Mathf.Max(Plugin.ShotRangeRifle.Value, Plugin.ShotRangeSniper.Value));
-            r = Mathf.Max(r, Mathf.Max(Plugin.ShotRangeShotgun.Value, Plugin.BlastRange.Value));
-            return Mathf.Max(r, Plugin.EngineMaxRange.Value);
+            Vector3 c = s.Box.ClosestPoint(new Vector3(pp.x, s.Box.center.y, pp.z));
+            return Mathf.Sqrt((c.x - pp.x) * (c.x - pp.x) + (c.z - pp.z) * (c.z - pp.z));
         }
-
-        // remaining CPU time of a structure's bake, ms (phase 0 = floors ~65 %, phase 1 = edges ~30 %, phase 2 = areas)
-        private static float RemainingMs(Structure s)
-        {
-            int n = Math.Max(1, s.W * s.H);
-            float done = s.FloorY == null ? 0f : s.Phase == 0 ? 0.65f * s.Next / n : s.Phase == 1 ? 0.65f + 0.3f * s.Next / n : 0.95f;
-            return n * _msPerCell * (1f - done);
-        }
-
         private static void Pick(Vector3 pp, float now)
         {
-            float dtp = now - _lastPickAt;
-            if (_lastPickAt > 0f && dtp > 0.05f)
+            if (_needed != null && (_needed.Baked || _needed.Root == null)) _needed = null;
+            float curD = _baking != null && _baking.Root != null ? Dist(_baking, pp) : float.MaxValue;
+            if (_baking != null && (_baking.Root == null || _baking.Baked || curD > FarDrop)) { _baking = null; curD = float.MaxValue; }
+            Structure take = null;
+            if (_needed != null && _needed != _baking) take = _needed;                                   // an NPC is waiting for it
+            else if (_baking == null || curD > NearPreempt)
             {
-                Vector3 dv = pp - _lastPos; dv.y = 0f;
-                float v = dv.magnitude / dtp;
-                if (v > 150f) v = 0f;                                       // a load / teleport, not a drive
-                _vNow = v;
-                _vPeak = Mathf.Max(v, _vPeak * Mathf.Pow(0.93f, dtp));      // the fastest lately, fading over ~15 s
+                // the nearest unbaked structure within reach; it takes over a running bake only when the player is at it
+                Structure best = null; float bd = Plugin.NavBakeRange.Value * 3f;
+                for (int i = 0; i < _structures.Count; i++)
+                {
+                    var s = _structures[i];
+                    if (s.Baked || s.Root == null || s == _baking) continue;
+                    float d = Dist(s, pp);
+                    if (d < bd) { bd = d; best = s; }
+                }
+                if (best != null && (_baking == null || bd <= NearPreempt)) take = best;
             }
-            _lastPos = pp; _lastPickAt = now;
-            float vEff = Mathf.Max(_vPeak, 7f), R = Relevance(), frame = Mathf.Clamp(_dtAvg > 0f ? _dtAvg : 1f / 60f, 1f / 240f, 0.1f);
-            float budget = BaseBudget();
-            Structure best = null; float bestSlack = float.MaxValue, curSlack = float.MaxValue;
-            for (int i = 0; i < _structures.Count; i++)
+            if (take != null && take != _baking)
             {
-                var s = _structures[i];
-                if (s.Baked || s.Root == null) continue;
-                Vector3 c = s.Box.ClosestPoint(new Vector3(pp.x, s.Box.center.y, pp.z));
-                float d = Mathf.Sqrt((c.x - pp.x) * (c.x - pp.x) + (c.z - pp.z) * (c.z - pp.z));
-                if (d > MaxBakeDistance) continue;
-                float bakeSec = RemainingMs(s) / budget * frame;
-                float slack = (d - R) / vEff - (bakeSec * 1.5f + 5f);       // seconds to spare before this map would come too late
-                if (s == _baking) curSlack = slack;
-                if (slack > 0f && d > Plugin.NavBakeRange.Value) continue;  // not needed yet
-                if (slack < bestSlack) { bestSlack = slack; best = s; }
+                if (_baking != null && Plugin.NavLog.Value) Plugin.Log.LogInfo("Nav: pauses the bake of " + _baking.Name + " for " + take.Name);
+                _baking = take;
+                if (take.FloorY == null) BeginBake(take);        // else: resumes where it stopped
+                curD = Dist(take, pp);
             }
-            if (best != null && (_baking == null || (best != _baking && bestSlack < curSlack - 5f)))
-            {
-                if (_baking != null && Plugin.NavLog.Value) Plugin.Log.LogInfo("Nav: pauses the bake of " + _baking.Name + " for " + best.Name);
-                _baking = best;
-                if (best.FloorY == null) BeginBake(best);        // else: resumes where it stopped
-            }
-            // the map is already late (the player is or soon will be within R) and the player stands still: bake faster
-            _urgent = _baking != null && (_baking == best ? bestSlack : curSlack) < 0f && _vNow < 2f;
+            _urgent = _baking != null && curD <= NearPreempt;     // the player is at it: faster
+            Needed = _baking != null && _baking == _needed;      // an NPC is waiting for it: fastest
         }
 
         private static float BaseBudget() { return Mathf.Max(0.2f, Plugin.NavBakeBudgetMs.Value); }
 
-        // this frame's slice: fixed by [Nav] BakeBudgetMs and the headroom - never more because the player is fast, only when frames are
-        // cheap (x2 above ~90 fps), the game is paused (x4, nothing moves), or a late map is needed where the player stands (x3 above ~50 fps);
-        // halved below ~45 fps
+        // this frame's slice: [Nav] BakeBudgetMs; x4 when an NPC waits for the map, x3 when the player is at the structure, x2 when frames
+        // are cheap (above ~90 fps), x4 while the game is paused; halved below ~45 fps
         private static float FrameBudget()
         {
             float b = BaseBudget(), dt = _dtAvg > 0f ? _dtAvg : 1f / 60f;
             if (Time.timeScale <= 0f) return b * 4f;
             if (dt > 1f / 45f) return b * 0.5f;
+            if (Needed && dt < 1f / 40f) return b * 4f;
             if (_urgent && dt < 1f / 50f) return b * 3f;
             if (dt < 1f / 90f) return b * 2f;
             return b;
@@ -201,7 +182,7 @@ namespace NPCAI
             {
                 if (now < _nextSweep) return;
                 int gone = _structures.RemoveAll(s => s.Root == null);      // despawned camps: drop their grids and cached routes
-                if (gone > 0 && Plugin.NavLog.Value) Plugin.Log.LogInfo("Nav: " + gone + " structure(s) gone");
+                if (gone > 0) { _compRing.Clear(); if (Plugin.NavLog.Value) Plugin.Log.LogInfo("Nav: " + gone + " structure(s) gone"); }   // _compRing holds whole structures (grids)
                 if (_baking != null && _baking.Root == null) _baking = null;
                 if (_nodeKind.Count > 200000) _nodeKind.Clear();
                 for (int i = 0; i < SceneManager.sceneCount; i++)
@@ -739,6 +720,7 @@ namespace NPCAI
             Structure s = null; int from = -1; float bestDy = float.MaxValue;
             foreach (var t in _structures)
             {
+                if (!t.Baked && t.Root != null && Inside(t, pos)) { _needed = t; continue; }     // not mapped yet: the bake scheduler takes it next
                 if (!t.Baked || t.FloorY == null || t.Root == null || !Inside(t, pos)) continue;
                 int tx, tz; CellOf(t, pos, out tx, out tz);
                 int tf = NearestReachable(t, pos, tx, tz, 6);
@@ -1329,7 +1311,8 @@ namespace NPCAI
             int n = s.W * s.H;
             var dist = Rent(n);
             for (int i = 0; i < n; i++) dist[i] = float.PositiveInfinity;
-            var heap = new Heap(Math.Max(64, n / 4));
+            var heap = _heap ?? (_heap = new Heap(Math.Max(64, n / 4)));    // one heap for every build (main thread only, no nesting): a large map's heap is ~0.7 MB
+            heap.Clear();
             if (inside) { dist[goalCell] = 0f; heap.Push(goalCell, 0f); }
             else
             {
@@ -1369,10 +1352,12 @@ namespace NPCAI
             if (d < dist[i]) { dist[i] = d; heap.Push(i, d); }
         }
 
+        private static Heap _heap;
         private sealed class Heap
         {
             private int[] _i; private float[] _k; private int _n;
             public Heap(int cap) { _i = new int[cap]; _k = new float[cap]; }
+            public void Clear() { _n = 0; }
             public void Push(int i, float k)
             {
                 if (_n == _i.Length) { Array.Resize(ref _i, _n * 2); Array.Resize(ref _k, _n * 2); }
@@ -1405,6 +1390,50 @@ namespace NPCAI
         {
             if (owner == null || !Plugin.ShowNav.Value) return;
             _debug[owner] = new Mark { Next = next, Where = s.Name, At = Time.time };
+        }
+
+        // (1.1.0) a cover spot for an NPC at pos against a target at target: the nearest walkable cell of its own area on its map, 2 m or
+        // more away, at least 4 m from the target, whose line to the target's chest is blocked (walls, rock, a car). Up to 80 lines.
+        private static readonly List<int> _coverCand = new List<int>();
+        private const int CoverBlockers = (1 << 0) | (1 << 8) | (1 << 9) | (1 << 11) | (1 << 14);
+        internal static bool CoverSpot(Vector3 pos, Vector3 target, float range, out Vector3 spot)
+        {
+            spot = pos;
+            int from; var s = BakedAt(pos, out from);
+            if (s == null || s.Comp == null) return false;
+            int comp = s.Comp[from];
+            int x0 = from % s.W, z0 = from / s.W, r = Mathf.Clamp(Mathf.CeilToInt(range / s.Cell), 2, 80);
+            float minD2 = (2f / s.Cell) * (2f / s.Cell);
+            _coverCand.Clear();
+            for (int dz = -r; dz <= r; dz++)
+                for (int dx = -r; dx <= r; dx++)
+                {
+                    int cx = x0 + dx, cz = z0 + dz;
+                    if (cx < 0 || cz < 0 || cx >= s.W || cz >= s.H) continue;
+                    int i = cz * s.W + cx;
+                    if (float.IsNaN(s.FloorY[i]) || s.Comp[i] != comp || dx * dx + dz * dz < minD2) continue;
+                    _coverCand.Add(i);
+                }
+            _coverCand.Sort((a, b) => Dist2(s, a, x0, z0).CompareTo(Dist2(s, b, x0, z0)));
+            Vector3 chest = target + Vector3.up * 1f;
+            int tested = 0;
+            foreach (int i in _coverCand)
+            {
+                Vector3 c = CellCenter(s, i % s.W, i / s.W, s.FloorY[i]);
+                if ((c - target).sqrMagnitude < 16f) continue;
+                if (++tested > 80) break;
+                RaycastHit h;
+                if (!Physics.Linecast(c + Vector3.up * 1.2f, chest, out h, CoverBlockers, QueryTriggerInteraction.Ignore)) continue;
+                spot = c; return true;
+            }
+            return false;
+        }
+
+        // (1.1.0) Passthrough: the NPC stands on a map cell next to a wall / obstacle (a corridor, a doorway, a tunnel)
+        internal static bool NearWall(Vector3 pos)
+        {
+            int c; var s = BakedAt(pos, out c);
+            return s != null && s.Near != null && c >= 0 && s.Near[c];
         }
 
         // ---------- for Idle (read-only) ----------
@@ -1548,6 +1577,7 @@ namespace NPCAI
                     Vector3 ge, gm;
                     if (!Ground(e, o.y, out ge) || !Ground(m, o.y, out gm)) continue;
                     if (!BodyPathClear(o, ge)) continue;
+                    if (Physics.Linecast(o + Vector3.up * 0.3f, ge + Vector3.up * 0.3f, BakeMask, QueryTriggerInteraction.Ignore)) continue;   // a kerb, a low wall, a fence
                     cand.Add(new KeyValuePair<float, Vector3>(ang, ge)); break;
                 }
             }

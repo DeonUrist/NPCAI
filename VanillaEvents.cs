@@ -25,10 +25,10 @@ namespace NPCAI
                 // Vanilla's gun sensor is only 80 m. Aim chooses positions from the
                 // effective range; repulse at that reach so rifle/sniper NPCs can hit
                 // from those positions without requiring Gunplay's projectiles.
+                var refs = RefsOf(owner);
                 if (Plugin.AimEnabled.Value || Plugin.BrainEnabled.Value)
                 {
-                    var rayObject = owner.transform.Find("AttackRaycast_Ranged");
-                    var sensor = rayObject != null ? rayObject.GetComponent<Micosmo.SensorToolkit.RaySensor>() : null;
+                    var sensor = refs.Sensor;
                     if (sensor != null)
                     {
                         __state = new RayState { Sensor = sensor, Length = sensor.Length };
@@ -36,13 +36,35 @@ namespace NPCAI
                         sensor.Pulse();
                     }
                 }
-                Vector3 origin = owner.transform.position;
-                foreach (var t in owner.GetComponentsInChildren<Transform>(true))
-                    if (t.name == "fire_effect" && t.parent != null && t.parent.name != "fire_effect" && t.parent.gameObject.activeInHierarchy)
-                    { origin = t.position; break; }
+                Vector3 origin = refs.Muzzle != null ? refs.Muzzle.position : owner.transform.position;
                 if (Senses.On) Senses.Shot(owner.transform.root.gameObject, origin, kind, false);
             }
             catch (Exception e) { Plugin.Warn("Vanilla NPC shot observation: " + e.Message); }
+        }
+
+        // per NPC gunman: its burst sensor and the muzzle (fire_effect) of the gun in its hand. Looked up once instead of a full
+        // GetComponentsInChildren + a name string per bone on every burst ray; the muzzle is looked up again when that gun is put away.
+        private sealed class ShooterRefs { public GameObject Owner; public Micosmo.SensorToolkit.RaySensor Sensor; public Transform Muzzle; public float NextScan; }
+        private static readonly System.Collections.Generic.Dictionary<int, ShooterRefs> _refs = new System.Collections.Generic.Dictionary<int, ShooterRefs>();
+        private static ShooterRefs RefsOf(GameObject owner)
+        {
+            int id = owner.GetInstanceID();
+            ShooterRefs r;
+            if (!_refs.TryGetValue(id, out r) || r.Owner != owner)
+            {
+                if (_refs.Count > 512) _refs.Clear();
+                var rayObject = owner.transform.Find("AttackRaycast_Ranged");
+                r = new ShooterRefs { Owner = owner, Sensor = rayObject != null ? rayObject.GetComponent<Micosmo.SensorToolkit.RaySensor>() : null };
+                _refs[id] = r;
+            }
+            if ((r.Muzzle == null || r.Muzzle.parent == null || !r.Muzzle.parent.gameObject.activeInHierarchy) && Time.time >= r.NextScan)
+            {
+                r.Muzzle = null; r.NextScan = Time.time + 1f;
+                foreach (var t in owner.GetComponentsInChildren<Transform>(true))
+                    if (t.name == "fire_effect" && t.parent != null && t.parent.name != "fire_effect" && t.parent.gameObject.activeInHierarchy)
+                    { r.Muzzle = t; break; }
+            }
+            return r;
         }
 
         public static void AfterNpcShot(RayState __state)

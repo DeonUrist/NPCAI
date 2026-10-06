@@ -43,7 +43,7 @@ namespace NPCAI
     //   AddForce.DoAddForce (Unstuck) - no hop.
     internal static class Brain
     {
-        internal enum Mode { Off, Chase, Hold, Advance, BackUp, Rest, Search, Walk }   // Walk (1.6.0): Idle walks it to a ghost, the brain stands aside
+        internal enum Mode { Off, Chase, Hold, Advance, BackUp, Rest, Search, Walk, Cover }   // Walk (1.6.0): Idle walks it to a ghost, the brain stands aside; Cover (1.1.0): runs to cover, fights from there
 
         private sealed class Npc
         {
@@ -79,9 +79,13 @@ namespace NPCAI
             public float SpeedScale = 1f;              // < 1: queues behind a friend going the same way
             public int AvoidSide; public float AvoidUntil;            // passing a friend: the side, kept a moment (no left-right dither)
             public int FriendBumps; public float FriendBumpsSince;
-            public Vector3 MakeWayDir; public float MakeWayUntil;    // standing in a friend's way: a short step aside
+            public Vector3 MakeWayDir; public float MakeWayUntil, MakeWaySpeed = 1.8f;    // standing in a friend's way: a short step aside; hit: a quick sidestep
             public readonly List<Vector3> Trail = new List<Vector3>(); public readonly List<byte> TrailKind = new List<byte>();   // [Debug] NavTrace
             public float NextTrail, NextTraceLog, NextTraceDump; public Vector3 TraceGoal; public string LegBlock = "";
+            // (1.1.0) cover: the spot, when the stay ends, arrived there, started by the game's own "hide" (a fast target) or by low health
+            public Vector3 CoverPos; public float CoverUntil, CoverSince, NextCoverCheck, CoverCooldownUntil; public bool CoverArrived, CoverFromHide;
+            public FsmGameObject HideVar;            // the Attack FSM's "Hide" variable (its FindClosest result)
+            public FsmFloat HpVar; public float HpMax;   // the Health FSM's Health, and the most it was seen at
         }
 
         private static readonly Dictionary<int, Npc> _npcs = new Dictionary<int, Npc>();
@@ -90,7 +94,6 @@ namespace NPCAI
         private static float _nextCount, _interval = 0.1f;
         private static int _active, _created;
         // layers (TagManager): 0 Default, 6 Player, 8 Car, 9 Item, 10 Actor, 11 Door, 14 Ground, 16 SeeTrough, 18 PhysicsLock
-        private static readonly int Mask = (1 << 0) | (1 << 8) | (1 << 11) | (1 << 16);   // the game's bumper-ray layers (buildings, cars, doors, fences)
         private static readonly int GroundMask = (1 << 0) | (1 << 8) | (1 << 11) | (1 << 14) | (1 << 16);   // + Ground: for the drop check
         private static readonly int LosMask = GroundMask;          // line of sight for the shooting decision: a hill crest hides the target too
         // pathing feelers: everything solid except creatures, the player, weapons and the non-world layers; Ground counts only where it is
@@ -148,7 +151,7 @@ namespace NPCAI
                 if (n.Crouched && n.T.parent != null) Crouch(n, false);     // seated by Apocapatrol after all: stand up
                 if (now < n.MakeWayUntil && n.Rb != null && n.T.parent == null && n.Mode != Mode.Off)   // a friend needs past: a short step aside
                 {
-                    Vector3 v = n.MakeWayDir * 1.8f; v.y = n.Rb.velocity.y; n.Rb.velocity = v;
+                    Vector3 v = n.MakeWayDir * n.MakeWaySpeed; v.y = n.Rb.velocity.y; n.Rb.velocity = v;
                 }
                 string state;
                 if (!Engaged(n, out state))
@@ -168,9 +171,10 @@ namespace NPCAI
                     }
                 }
                 if (n.Mode == Mode.Off || n.Mode == Mode.BackUp || n.Mode == Mode.Walk) continue;     // Walk: Idle turns the body
-                if (n.Frozen && state != "trigger" && state != "run") Unfreeze(n);      // the burst (or a melee swing, a hide run): let the animation play
-                bool steering = (n.Mode == Mode.Chase || n.Mode == Mode.Advance) && n.HasHeading && state != "attack_melee" && state != "hide";
-                if (state != "trigger" && state != "run" && state != "attack_ranged" && !steering) continue;   // melee swing, hide run ...: the game's own facing
+                bool cover = n.Mode == Mode.Cover, coverHold = cover && n.CoverArrived;
+                if (n.Frozen && !ChaseState(state) && !(cover && state == "hide")) Unfreeze(n);      // the burst (or a melee swing, a hide run): let the animation play
+                bool steering = (n.Mode == Mode.Chase || n.Mode == Mode.Advance || (cover && !coverHold)) && n.HasHeading && state != "attack_melee" && (state != "hide" || cover);
+                if (!ChaseState(state) && state != "attack_ranged" && !steering && !coverHold) continue;   // melee swing, hide run ...: the game's own facing
                 // (1.4.6) a moving NPC is turned to its steered heading in every Attack state but the swing / hide: the run velocity is ours in all
                 // of them, and an unturned body used to run on along its old facing (an idle raider: toward home, away from the way out)
                 var target = n.Target.Value;
@@ -186,7 +190,7 @@ namespace NPCAI
                     }
                     to = Quaternion.Euler(0f, n.LookYaw, 0f) * Vector3.forward;
                 }
-                else if (n.Mode == Mode.Hold || n.Mode == Mode.Rest || state == "attack_ranged" || now < n.FaceTargetUntil)
+                else if (n.Mode == Mode.Hold || n.Mode == Mode.Rest || coverHold || state == "attack_ranged" || now < n.FaceTargetUntil)
                     to = target.transform.position - n.T.position;
                 else if (n.HasHeading) to = Quaternion.Euler(0f, n.Heading, 0f) * Vector3.forward;
                 else to = target.transform.position - n.T.position;
@@ -195,6 +199,10 @@ namespace NPCAI
                 n.T.rotation = Quaternion.RotateTowards(n.T.rotation, Quaternion.LookRotation(to, Vector3.up), turn);
             }
         }
+
+        // the Attack FSM's chase states: "trigger" (every human and most animals), "trigger 2" (Nightwalker; probe 2026-10-06) and the
+        // random-yaw "run" the game enters from it. The brain drives the pedal and the facing only in these.
+        private static bool ChaseState(string s) { return s == "trigger" || s == "run" || s == "trigger 2"; }
 
         // the brain is in charge only while the Attack FSM runs with a target, the NPC stands on its own (not seated in a car) and is near
         private static bool Engaged(Npc n, out string state)
@@ -216,9 +224,13 @@ namespace NPCAI
             Vector3 d3 = tp - n.T.position; d3.y = 0f;
             float d = d3.magnitude;
             n.Dist = d;
+            int kind = Senses.KindOf(n.Owner);           // 0 vanilla / seen target, 1 seen target, 2 going to a ghost, 3 searching at it
+            string ast = n.Attack.Fsm.ActiveStateName;
+            // (1.1.0) in cover: stays there (a wounded raider does not come out after a ghost), see CoverThink
+            if (n.Mode == Mode.Cover) { CoverThink(n, now, ast, kind, tp); return; }
             // (1.6.0) a ghost to walk to: Idle walks the raider there the way it walks home (map to the exit, then straight); the brain only
             // stands aside (no pedal, no turning, no stuck handling) - at any distance. Idle hands it back after 3 failed tries.
-            if (Senses.KindOf(n.Owner) == 2 && Idle.WalksToGhost(n.Owner))
+            if (kind == 2 && Idle.WalksToGhost(n.Owner))
             {
                 n.ToGhost = true;
                 if (n.Mode != Mode.Walk) SetMode(n, Mode.Walk, "Idle walks it to the ghost");
@@ -231,10 +243,13 @@ namespace NPCAI
                 WeaponRanges.Kind gk;
                 if (WeaponRanges.GunKindOf(n.Owner, out gk)) { n.Ranged = true; n.Kind = gk; SetupRanged(n); }
             }
-            int kind = Senses.KindOf(n.Owner);           // 0 vanilla / seen target, 1 seen target, 2 going to a ghost, 3 searching at it
             if (kind == 3) { if (n.Mode != Mode.Search) { n.NextLookTurn = 0f; SetMode(n, Mode.Search, "looks around"); } return; }
             n.ToGhost = kind == 2;
             if (n.Mode == Mode.Off || n.Mode == Mode.Search || n.Mode == Mode.Walk) SetMode(n, Mode.Chase, !Plugin.BrainLog.Value ? "" : (n.ToGhost ? "ghost" : "target") + " at " + d.ToString("0") + " m");
+            // (1.1.0) cover: the game's own hide (a target faster than 6 m/s: FindClosest tag Hide, then it only turned toward it and ran
+            // blind) and low health - both walked there with the map and the feelers, then held facing the target
+            if (!n.ToGhost && n.Mode != Mode.BackUp && n.Mode != Mode.Rest) CoverCheck(n, now, ast, kind, tp);
+            if (n.Mode == Mode.Cover) { CoverThink(n, now, ast, kind, tp); return; }
 
             if (Tracing && now >= n.NextTrail && n.Trail.Count < 1200)
             {
@@ -264,8 +279,12 @@ namespace NPCAI
                     if (lost) { SetMode(n, Mode.Chase, !Plugin.BrainLog.Value ? "" : los ? "target at " + d.ToString("0") + " m" : "no line of sight"); }
                     else if (now >= n.NextRecheck)
                     {
-                        n.NextRecheck = now + UnityEngine.Random.Range(Mathf.Max(0.1f, Plugin.HoldRecheckMin.Value), Mathf.Max(0.1f, Plugin.HoldRecheckMax.Value)) * R;
-                        if (UnityEngine.Random.Range(0f, 100f) < Plugin.AdvanceChance.Value && d > 3f)
+                        n.NextRecheck = now + UnityEngine.Random.Range(NPCAI.Aim.HoldRecheckMin, NPCAI.Aim.HoldRecheckMax) * R;
+                        // advances more when the target has not fired for 8 s (reloading, hiding), never when hurt (below CoverBelow)
+                        float adv = Plugin.AdvanceChance.Value;
+                        if (Time.time - Senses.LastPlayerShotAt > 8f) adv *= 2.5f;
+                        if (n.HpVar != null && n.HpMax > 0f && Plugin.CoverBelow.Value > 0f && n.HpVar.Value < n.HpMax * Plugin.CoverBelow.Value / 100f) adv = 0f;
+                        if (UnityEngine.Random.Range(0f, 100f) < adv && d > 3f)
                         {
                             n.ModeUntil = now + UnityEngine.Random.Range(Plugin.AdvanceMin.Value, Mathf.Max(Plugin.AdvanceMin.Value, Plugin.AdvanceMax.Value));
                             SetMode(n, Mode.Advance, "feels like it");
@@ -284,12 +303,17 @@ namespace NPCAI
                 }
                 else if (n.Mode == Mode.Chase && good && n.LosLooks >= 2)        // two thinks in a row: a fence bar flickering across the line doesn't stop and start the hold
                 {
-                    n.NextRecheck = now + UnityEngine.Random.Range(Mathf.Max(0.1f, Plugin.HoldRecheckMin.Value), Mathf.Max(0.1f, Plugin.HoldRecheckMax.Value)) * R;
+                    n.NextRecheck = now + UnityEngine.Random.Range(NPCAI.Aim.HoldRecheckMin, NPCAI.Aim.HoldRecheckMax) * R;
                     SetMode(n, Mode.Hold, !Plugin.BrainLog.Value ? "" : "line of sight at " + d.ToString("0") + " m (engages within " + engage.ToString("0") + ")");
                     return;
                 }
             }
-            // moving: Chase or Advance
+            MoveToward(n, tp, d3, d, now);
+        }
+
+        // moving (Chase, Advance, Cover on the way): the map's waypoint or the feelers toward tp, d3 = flat vector to it, d its length
+        private static void MoveToward(Npc n, Vector3 tp, Vector3 d3, float d, float now)
+        {
             if (Blocked(n, now)) return;
             // inside a baked camp / building / cave the structure's own map says the way (out through the right exit, around its walls)
             Vector3 navNext = Vector3.zero; float pathLeft = 0f;
@@ -349,6 +373,93 @@ namespace NPCAI
             }
         }
 
+        // ---------- cover (1.1.0) ----------
+        private static GameObject[] _hides; private static float _nextHides;
+        private static GameObject NearestHide(Vector3 pos, float range)
+        {
+            if (Time.time >= _nextHides) { _nextHides = Time.time + 10f; try { _hides = GameObject.FindGameObjectsWithTag("Hide"); } catch (Exception) { _hides = new GameObject[0]; } }
+            GameObject best = null; float bd = range * range;
+            if (_hides != null) foreach (var h in _hides) { if (h == null) continue; float d2 = (h.transform.position - pos).sqrMagnitude; if (d2 < bd) { bd = d2; best = h; } }
+            return best;
+        }
+
+        private static void CoverCheck(Npc n, float now, string ast, int kind, Vector3 tp)
+        {
+            // the game's hide: its own FindClosest result (the Attack FSM's Hide variable), while it is in that state
+            if (ast == "hide")
+            {
+                if (now < n.CoverCooldownUntil) return;
+                var h = n.HideVar != null ? n.HideVar.Value : null;
+                if (h != null && (h.transform.position - n.T.position).sqrMagnitude <= 60f * 60f) { StartCover(n, h.transform.position, now, 60f, true, "the game's hide: " + h.name); return; }
+                return;
+            }
+            float below = Plugin.CoverBelow.Value;
+            if (below <= 0f || kind != 1 || now < n.NextCoverCheck || now < n.CoverCooldownUntil || n.HpVar == null) return;
+            n.NextCoverCheck = now + 3f;
+            float hp = n.HpVar.Value;
+            if (hp > n.HpMax) n.HpMax = hp;
+            if (n.HpMax <= 0f || hp >= n.HpMax * below / 100f) return;
+            float range = Plugin.CoverRange.Value;
+            Vector3 spot; string what;
+            var hide = NearestHide(n.T.position, range);
+            if (hide != null && (hide.transform.position - tp).sqrMagnitude > 16f) { spot = hide.transform.position; what = "cover object " + hide.name; }
+            else if (Nav.CoverSpot(n.T.position, tp, range, out spot)) what = "a spot out of sight on the map";
+            else { n.NextCoverCheck = now + 10f; return; }
+            StartCover(n, spot, now, UnityEngine.Random.Range(Plugin.CoverMin.Value, Mathf.Max(Plugin.CoverMin.Value, Plugin.CoverMax.Value)), false, "health " + hp.ToString("0") + "/" + n.HpMax.ToString("0") + ", " + what);
+        }
+
+        private static void StartCover(Npc n, Vector3 spot, float now, float seconds, bool fromHide, string why)
+        {
+            n.CoverPos = spot; n.CoverArrived = false; n.CoverFromHide = fromHide; n.CoverSince = now; n.CoverUntil = now + seconds;
+            n.CoverCooldownUntil = n.CoverUntil + 20f;
+            SetMode(n, Mode.Cover, Plugin.BrainLog.Value ? why + ", " + Vector3.Distance(spot, n.T.position).ToString("0") + " m away" : "");
+        }
+
+        private static void CoverThink(Npc n, float now, string ast, int kind, Vector3 tp)
+        {
+            Vector3 c3 = n.CoverPos - n.T.position; c3.y = 0f;
+            float cd = c3.magnitude, td = n.Dist;
+            // leaves: the stay is over, the target is on top of it, the game's hide ended (a slow target again), or it is searching /
+            // vanilla (no target at all). A ghost (lost sight) does not pull a wounded raider out of cover.
+            bool leave = now >= n.CoverUntil || (kind == 1 && td < 8f) || (n.CoverFromHide && ast != "hide" && now - n.CoverSince > 1f) || kind == 3 || (kind == 0 && Senses.On);
+            if (leave)
+            {
+                if (n.CoverArrived) Move(n, true);
+                SetMode(n, Mode.Chase, Plugin.BrainLog.Value ? (kind == 1 && td < 8f ? "target too close for cover" : now >= n.CoverUntil ? "cover time over" : kind != 1 ? "nothing to hide from" : "the game's hide ended") : "");
+                return;
+            }
+            if (n.CoverArrived) return;              // holds there: faces the target (Tick), the game's burst logic + Aim shoot from cover
+            if (cd <= 1.5f)
+            {
+                n.CoverArrived = true; n.HasHeading = false;
+                Move(n, false);
+                if (n.Ranged) { Aim(n); if (Plugin.CrouchChance.Value > 0f && UnityEngine.Random.Range(0f, 100f) < Plugin.CrouchChance.Value * 1.5f) Crouch(n, true); }
+                if (Plugin.BrainLog.Value) Plugin.Log.LogInfo("Brain: " + n.Owner.name + " in cover, " + td.ToString("0") + " m from its target");
+                return;
+            }
+            MoveToward(n, n.CoverPos, c3, cd, now);
+        }
+
+        // Senses: hit by something - a holding gunman steps aside and (maybe) kneels
+        internal static void Hit(GameObject owner)
+        {
+            var n = Get(owner);
+            if (n == null || n.Mode == Mode.Off || n.Rb == null) return;
+            if (n.Mode == Mode.Hold || (n.Mode == Mode.Cover && n.CoverArrived))
+            {
+                // a shooter that is hit sidesteps 2-3 m (SideStepSpeed m/s for SideStepSeconds), at most every 1.5 s, and kneels more often
+                float now = Time.time;
+                if (now < n.MakeWayUntil + 1.5f) return;
+                Vector3 dir = n.T.right * (UnityEngine.Random.value < 0.5f ? -1f : 1f);
+                Vector3 origin = n.Col != null ? n.Col.bounds.center : n.T.position + Vector3.up;
+                if (Physics.Raycast(origin, dir, 2.5f, PathMask, QueryTriggerInteraction.Ignore)) dir = -dir;      // a wall that way: the other way
+                n.MakeWayDir = dir; n.MakeWaySpeed = 3.5f; n.MakeWayUntil = now + 0.7f;
+                if (n.Crouched) Crouch(n, false);
+                else if (n.Ranged && Plugin.CrouchChance.Value > 0f && UnityEngine.Random.Range(0f, 100f) < Plugin.CrouchChance.Value * 2f) Crouch(n, true);
+                if (Plugin.BrainLog.Value) Plugin.Log.LogInfo("Brain: " + n.Owner.name + " is hit, sidesteps");
+            }
+        }
+
         // speed while turning: 1 within 30 deg of the wanted heading, down to 0.1 at 120 deg and beyond (also used by Idle)
         internal static float TurnSpeedFactor(float offDeg)
         {
@@ -363,7 +474,7 @@ namespace NPCAI
         private static bool Blocked(Npc n, float now)
         {
             float dt = now - n.BlkLastThink; n.BlkLastThink = now;
-            bool moving = n.Mode == Mode.Chase || n.Mode == Mode.Advance;
+            bool moving = n.Mode == Mode.Chase || n.Mode == Mode.Advance || (n.Mode == Mode.Cover && !n.CoverArrived);
             if (!moving || dt > 1f || Senses.Blown(n.Owner) || n.Rb == null) { BlkReset(n, now); return false; }
             n.BlkDriven += n.CmdSpeed * dt;
             if (now - n.BlkSince < Mathf.Max(0.2f, Plugin.BlockedSeconds.Value)) return false;
@@ -453,7 +564,7 @@ namespace NPCAI
         }
 
         // ---------- feelers ----------
-        // Pathing (melee NPCs always, gunmen with [Brain] ShooterPathing): FeelerCount capsule sweeps (radius ~0.3 m, knee to chest, so a
+        // Pathing (everyone, 1.1.0; the plain rays of 0.7.0 are gone): FeelerCount capsule sweeps (radius ~0.3 m, knee to chest, so a
         // post, a tyre, a rock or a fence bar anywhere across the body counts) over +-FeelerAngle around the direction to the target, on the
         // bumper layers plus Item. Each direction is scored by the progress it makes toward the target over the feeler length (a long free
         // detour beats a short free straight line only when it pays), minus a penalty for ending near a wall. The moment the straight line is
@@ -461,7 +572,6 @@ namespace NPCAI
         // straight line has been clear twice in a row: the other half of the fan is penalised, so it can only choose how hard to turn, never
         // dither left-right into the thing. Boxed in (every feeler short), it follows the obstacle's tangent on the committed side. No progress
         // toward the target for 5 s flips the side once, then it rests (Rest mode) and starts over.
-        // Gunmen without ShooterPathing keep the plain rays (one height, bumper layers, angle-scored) of 0.7.0.
         private static readonly float[] _free = new float[32];
         private static readonly Vector3[] _normals = new Vector3[32];
         private static readonly Collider[] _touch = new Collider[16];
@@ -477,7 +587,6 @@ namespace NPCAI
                 _angles = new float[count];
                 for (int i = 0; i < count; i++) _angles[i] = -half + half * 2f * i / (count - 1);   // symmetric, 0 in the middle
             }
-            bool adv = !n.Ranged || Plugin.ShooterPathing.Value || n.ToGhost || n.OnNav;   // on a map route everyone uses the body-wide feelers
             float len = Mathf.Max(0.5f, n.Ranged && !n.ToGhost ? Plugin.FeelerLength.Value : Plugin.MeleeFeelerLength.Value);
             if (dist < len && !n.OnNav) len = Mathf.Max(0.5f, dist);     // close to the target: don't "see" it as a wall (a map waypoint is no object)
             Vector3 origin = n.Col != null ? n.Col.bounds.center : n.T.position;
@@ -485,40 +594,33 @@ namespace NPCAI
             Transform troot = n.Target.Value != null ? n.Target.Value.transform.root : null;
             bool blockedMem = now < n.BlockedUntil;
             Vector3 right = Quaternion.Euler(0f, targetYaw, 0f) * Vector3.right;
-            int mask = adv ? PathMask : Mask;
+            int mask = PathMask;
             float radius = 0.3f;
             Vector3 p1 = origin, p2 = origin;
-            if (adv)
+            // the swept capsule: a little wider than the body, from ankle height (5 cm) to chest, so a brazier, a tyre or a fence bar that
+            // the body would clip registers (small animals: whatever fits between their collider's top and bottom)
+            if (n.Col != null)
             {
-                // the swept capsule: a little wider than the body, from ankle height (5 cm) to chest, so a brazier, a tyre or a fence bar that
-                // the body would clip registers (small animals: whatever fits between their collider's top and bottom)
-                if (n.Col != null)
-                {
-                    var b = n.Col.bounds;
-                    radius = Mathf.Clamp(Mathf.Min(b.extents.x, b.extents.z) * 1.15f, 0.12f, 0.45f);
-                    float lo = b.min.y + Mathf.Min(0.05f, b.size.y * 0.05f) + radius, hi = b.min.y + b.size.y * 0.7f - radius;   // from 5 cm above the feet: a brazier lip, a kerb
-                    if (hi < lo) hi = lo;
-                    p1 = new Vector3(b.center.x, lo, b.center.z); p2 = new Vector3(b.center.x, hi, b.center.z);
-                }
+                var b = n.Col.bounds;
+                radius = Mathf.Clamp(Mathf.Min(b.extents.x, b.extents.z) * 1.15f, 0.12f, 0.45f);
+                float lo = b.min.y + Mathf.Min(0.05f, b.size.y * 0.05f) + radius, hi = b.min.y + b.size.y * 0.7f - radius;   // from 5 cm above the feet: a brazier lip, a kerb
+                if (hi < lo) hi = lo;
+                p1 = new Vector3(b.center.x, lo, b.center.z); p2 = new Vector3(b.center.x, hi, b.center.z);
             }
             RaycastHit hit;
             float feetY = n.Col != null ? n.Col.bounds.min.y : n.T.position.y - 1f;
             int centre = count / 2;
-            int touching = 0;
-            if (adv)
+            // a sweep ignores whatever overlaps its start, so the thing the body is pressed against would be invisible: block the
+            // directions toward anything already touching the swept capsule
+            int touching = Physics.OverlapCapsuleNonAlloc(p1, p2, radius, _touch, mask, QueryTriggerInteraction.Ignore);
+            for (int k = 0; k < touching; k++)
             {
-                // a sweep ignores whatever overlaps its start, so the thing the body is pressed against would be invisible: block the
-                // directions toward anything already touching the swept capsule
-                touching = Physics.OverlapCapsuleNonAlloc(p1, p2, radius, _touch, mask, QueryTriggerInteraction.Ignore);
-                for (int k = 0; k < touching; k++)
-                {
-                    var c = _touch[k]; _touchAway[k] = Vector3.zero;
-                    if (c == null || c.transform.root == n.T || (troot != null && c.transform.root == troot)) { _touch[k] = null; continue; }
-                    Vector3 away; float awayY;
-                    if (!TouchDir(n, c, origin, out away, out awayY)) { _touch[k] = null; continue; }
-                    if (Nav.IsFloorCollider(c) && awayY <= feetY + 0.3f) { _touch[k] = null; continue; }      // the ground under the feet (terrain, a cave floor)
-                    _touchAway[k] = away;
-                }
+                var c = _touch[k]; _touchAway[k] = Vector3.zero;
+                if (c == null || c.transform.root == n.T || (troot != null && c.transform.root == troot)) { _touch[k] = null; continue; }
+                Vector3 away; float awayY;
+                if (!TouchDir(n, c, origin, out away, out awayY)) { _touch[k] = null; continue; }
+                if (Nav.IsFloorCollider(c) && awayY <= feetY + 0.3f) { _touch[k] = null; continue; }      // the ground under the feet (terrain, a cave floor)
+                _touchAway[k] = away;
             }
             for (int i = 0; i < count; i++)
             {
@@ -533,15 +635,13 @@ namespace NPCAI
                     if (Vector3.Angle(dir, -away) < 70f) { free = 0f; normal = away; }
                 }
                 if (free <= 0f) { _free[i] = 0f; _normals[i] = normal; _blocks[i] = 1f; continue; }
-                bool hitSomething = adv ? Physics.CapsuleCast(p1, p2, radius, dir, out hit, len, mask, QueryTriggerInteraction.Ignore)
-                                        : Physics.Raycast(origin, dir, out hit, len, mask, QueryTriggerInteraction.Ignore);
-                if (hitSomething && (troot == null || hit.collider.transform.root != troot) && hit.collider.transform.root != n.T
-                    && !(adv && Nav.IsFloor(hit.collider, hit.normal, hit.point.y, feetY)))      // gentle ground ahead is not a wall (terrain or a cave floor rising)
+                if (Physics.CapsuleCast(p1, p2, radius, dir, out hit, len, mask, QueryTriggerInteraction.Ignore)
+                    && (troot == null || hit.collider.transform.root != troot) && hit.collider.transform.root != n.T
+                    && !Nav.IsFloor(hit.collider, hit.normal, hit.point.y, feetY))      // gentle ground ahead is not a wall (terrain or a cave floor rising)
                 { free = Mathf.Max(0f, hit.distance); normal = hit.normal; }
                 _free[i] = free; _normals[i] = normal; _blocks[i] = 1f - free / len;
             }
 
-            if (adv)
             {
                 bool straightBlocked = _free[centre] < len * 0.9f;
                 { float fl0 = 0f, fr0 = 0f; for (int i = 0; i < count; i++) { if (_angles[i] < 0f) fl0 += _free[i]; else if (_angles[i] > 0f) fr0 += _free[i]; } n.FreeLeft = fl0; n.FreeRight = fr0; }
@@ -575,22 +675,16 @@ namespace NPCAI
                     if (n.ClearLooks >= 2 && now >= n.SideUntil) { n.Side = 0; n.Flipped = false; }
                 }
             }
-            else n.Side = 0;
 
             int best = -1; float bestScore = float.MinValue;
             for (int i = 0; i < count; i++)
             {
                 float yaw = targetYaw + _angles[i];
-                float score;
-                if (adv)
-                {
-                    Vector3 dir = Quaternion.Euler(0f, yaw, 0f) * Vector3.forward;
-                    Vector3 reach = dir * _free[i];
-                    float dAfter = (toTarget - reach).magnitude;
-                    score = (dist - dAfter) / len - _blocks[i] * 1.0f;        // net progress toward the target, less for ending at a wall
-                    if (n.Side != 0 && Mathf.Sign(_angles[i]) == -n.Side && _angles[i] != 0f) score -= 1.0f;
-                }
-                else score = Mathf.Cos(_angles[i] * Mathf.Deg2Rad) - _blocks[i] * 2.5f;
+                Vector3 dir = Quaternion.Euler(0f, yaw, 0f) * Vector3.forward;
+                Vector3 reach = dir * _free[i];
+                float dAfter = (toTarget - reach).magnitude;
+                float score = (dist - dAfter) / len - _blocks[i] * 1.0f;        // net progress toward the target, less for ending at a wall
+                if (n.Side != 0 && Mathf.Sign(_angles[i]) == -n.Side && _angles[i] != 0f) score -= 1.0f;
                 if (blockedMem && Mathf.Abs(Mathf.DeltaAngle(yaw, n.BlockedYaw)) < 50f) score -= 2f;
                 if (n.HasHeading && Mathf.Abs(Mathf.DeltaAngle(yaw, n.Heading)) < 12f) score += 0.1f;   // no flicker between near-equal rays
                 _scores[i] = score;
@@ -613,7 +707,7 @@ namespace NPCAI
             if (best < 0) best = centre;
             float heading = targetYaw + _angles[best];
 
-            if (adv && n.Side != 0)
+            if (n.Side != 0)
             {
                 // boxed in (every feeler short): follow the obstacle's surface on the committed side, pushed off it a little when very close
                 bool boxed = true;
@@ -639,7 +733,7 @@ namespace NPCAI
                     }
                 }
             }
-            heading = AvoidFriends(n, heading, origin, p1, p2, radius, adv ? mask : PathMask, now);
+            heading = AvoidFriends(n, heading, origin, p1, p2, radius, mask, now);
             n.Heading = heading;
             n.HasHeading = true;
         }
@@ -692,7 +786,7 @@ namespace NPCAI
                 push += side * Mathf.Lerp(55f, 20f, d / 2.5f);
                 if (o != null && !oMoving && d < 1.6f && (o.Mode == Mode.Hold || o.Mode == Mode.Rest || o.Mode == Mode.Search) && !Idle.SearchWalking(o.Owner))
                 {
-                    o.MakeWayDir = Vector3.Cross(Vector3.up, fwd) * -side;     // away from the side the passer takes
+                    o.MakeWayDir = Vector3.Cross(Vector3.up, fwd) * -side; o.MakeWaySpeed = 1.8f;     // away from the side the passer takes
                     o.MakeWayUntil = now + 0.6f;
                 }
             }
@@ -840,6 +934,8 @@ namespace NPCAI
         {
             Mode was = n.Mode;
             n.Mode = m;
+            if (m == Mode.Cover && was != Mode.Cover) Senses.SetHiding(n.Owner, true);          // the senses: keep the target, take no ghosts
+            else if (was == Mode.Cover && m != Mode.Cover) Senses.SetHiding(n.Owner, false);
             if (Tracing && m != was)
             {
                 if ((m == Mode.Chase || m == Mode.Advance) && (was == Mode.Off || was == Mode.Search)) { n.Trail.Clear(); n.TrailKind.Clear(); n.NextTrail = 0f; n.NextTraceDump = 0f; }
@@ -873,7 +969,7 @@ namespace NPCAI
         {
             if (n.Movement == null || n.Attack == null || n.Attack.Fsm == null) return;
             string s = n.Attack.Fsm.ActiveStateName;
-            if (s != "trigger" && s != "run") return;
+            if (!ChaseState(s) && s != "hide") return;
             n.Movement.SendEvent(run ? "Animal_Run" : "Animal_Idle");
         }
 
@@ -1090,7 +1186,7 @@ namespace NPCAI
             var target = n.Target != null ? n.Target.Value : null;
             if (n.Ranged && !n.ToGhost && target != null && n.Dist <= WeaponRanges.RangeOf(n.Kind) && LineOfSight(n, target, target.transform.position))
             {
-                n.NextRecheck = now + Mathf.Max(0.1f, Plugin.HoldRecheckMax.Value) * R;
+                n.NextRecheck = now + NPCAI.Aim.HoldRecheckMax * R;
                 SetMode(n, Mode.Hold, "stuck, shoots from here");
                 return;
             }
@@ -1105,12 +1201,9 @@ namespace NPCAI
             float yaw = n.T.eulerAngles.y;
             n.BlockedYaw = yaw; n.BlockedUntil = now + Mathf.Max(0f, Plugin.StuckMemorySeconds.Value) * R;
             n.HasWaypoint = false; n.NextScout = 0f;
-            if (!n.Ranged || Plugin.ShooterPathing.Value)
-            {
-                // the body hit something the feelers did not see (or saw too late): commit to the freer side now and keep it through the back-up
-                if (n.Side == 0) n.Side = n.FreeRight >= n.FreeLeft ? 1 : -1;
-                n.SideUntil = now + SideLock * 2f * R; n.ClearLooks = 0;
-            }
+            // the body hit something the feelers did not see (or saw too late): commit to the freer side now and keep it through the back-up
+            if (n.Side == 0) n.Side = n.FreeRight >= n.FreeLeft ? 1 : -1;
+            n.SideUntil = now + SideLock * 2f * R; n.ClearLooks = 0;
             if (Plugin.BrainLog.Value) LogAhead(n);
             if (TryHop(n, now, true)) return;       // stuck: a low edge is hopped even when its face is sloped (only gentle terrain is not)
             n.ModeUntil = now + Mathf.Max(0.1f, Plugin.StuckBackupSeconds.Value) * R;
@@ -1197,11 +1290,13 @@ namespace NPCAI
             Npc n;
             if (_npcs.TryGetValue(id, out n)) return n;
             if (_ignored.Contains(id)) return null;
+            _retry = false;
             n = Make(owner);
-            if (n == null) { _ignored.Add(id); return null; }
+            if (n == null) { if (!_retry) _ignored.Add(id); return null; }
             _npcs[id] = n;
             return n;
         }
+        private static bool _retry;      // Make: not ready yet (Detection FSM not initialised) - asked again next time, not ignored for good
 
         private static Npc Make(GameObject owner)
         {
@@ -1221,10 +1316,13 @@ namespace NPCAI
                 }
             }
             if (attack == null || movement == null || detection == null || unstuck == null) return null;
-            if (detection.Fsm == null || !detection.Fsm.Initialized) return null;    // try again next frame (not cached as ignored)
+            if (detection.Fsm == null || !detection.Fsm.Initialized) { _retry = true; return null; }    // try again next frame (not cached as ignored)
             var target = detection.FsmVariables.FindFsmGameObject("detectedObj");
             if (target == null) return null;
             var n = new Npc { Owner = owner, T = owner.transform, Rb = rb, Col = owner.GetComponent<Collider>(), Attack = attack, Movement = movement, Target = target };
+            n.HideVar = attack.FsmVariables.FindFsmGameObject("Hide");
+            foreach (var f in owner.GetComponents<PlayMakerFSM>())
+                if (f != null && f.FsmName == "Health" && f.Fsm != null && f.Fsm.Initialized) { n.HpVar = f.FsmVariables.FindFsmFloat("Health"); if (n.HpVar != null) n.HpMax = n.HpVar.Value; break; }
             WeaponRanges.Kind kind;
             n.Ranged = WeaponRanges.GunKindOf(owner, out kind);
             n.Kind = kind;
@@ -1282,8 +1380,8 @@ namespace NPCAI
                 float z = __instance.z != null && !__instance.z.IsNone ? __instance.z.Value : (__instance.vector != null && !__instance.vector.IsNone ? __instance.vector.Value.z : 0f);
                 if (z <= 0f) return true;      // the Idle / attack states' "stop": vanilla
                 if (n.Rb == null) return true;
-                float speed = n.Mode == Mode.BackUp ? -Mathf.Min(z, 2.5f) : (n.Mode == Mode.Hold || n.Mode == Mode.Rest || n.Mode == Mode.Search) ? 0f : z * n.SpeedScale;
-                if (n.Mode == Mode.Chase || n.Mode == Mode.Advance)
+                float speed = n.Mode == Mode.BackUp ? -Mathf.Min(z, 2.5f) : (n.Mode == Mode.Hold || n.Mode == Mode.Rest || n.Mode == Mode.Search || (n.Mode == Mode.Cover && n.CoverArrived)) ? 0f : z * n.SpeedScale;
+                if (n.Mode == Mode.Chase || n.Mode == Mode.Advance || n.Mode == Mode.Cover)
                 {
                     // deliberate movement only: no heading yet (the first think after the alert) -> stand; facing away from the heading -> slow
                     // down while turning (full speed within 30 deg, 40 % at 90, 10 % from 120: a big turn is made nearly on the spot, not as an arc)
@@ -1354,7 +1452,8 @@ namespace NPCAI
                 var n = NpcOf(fsm, "Attack");
                 if (n == null) return true;
                 string st = fsm.ActiveStateName;
-                return st != "trigger" && st != "run";
+                if (st == "hide") return n.Mode != Mode.Cover;     // covering: the brain steers to the cover and faces the target itself
+                return !ChaseState(st);
             }
             catch (Exception e) { Plugin.Log.LogError("Brain: " + e); return true; }
         }
@@ -1369,9 +1468,9 @@ namespace NPCAI
                 if (ev == "Animal_Run")
                 {
                     var n = NpcOf(__instance.Fsm, "Attack");
-                    if (n == null || (n.Mode != Mode.Hold && n.Mode != Mode.Rest && n.Mode != Mode.Search && n.Mode != Mode.Walk)) return true;
+                    if (n == null || (n.Mode != Mode.Hold && n.Mode != Mode.Rest && n.Mode != Mode.Search && n.Mode != Mode.Walk && !(n.Mode == Mode.Cover && n.CoverArrived))) return true;
                     if (n.Movement != null) n.Movement.SendEvent("Animal_Idle");
-                    if (n.Mode == Mode.Hold) Aim(n);
+                    if (n.Mode == Mode.Hold || (n.Mode == Mode.Cover && n.Ranged)) Aim(n);
                     __instance.Finish();
                     return false;
                 }
@@ -1394,55 +1493,6 @@ namespace NPCAI
         {
             try { return NpcOf(__instance.Fsm, "Unstuck") == null; }
             catch (Exception e) { Plugin.Log.LogError("Brain: " + e); return true; }
-        }
-
-        // ---------- reaction time ----------
-        // The NPCs' eyes are SensorToolkit sensors on the "Sensors" child (a RangeSensor feeding a LOSSensor; the Detection FSM polls their
-        // results every frame). They pulse on a fixed interval, so an NPC notices you up to one interval (plus the LOS moving average) after
-        // you walk into view. Harmony postfix on both sensors' OnEnable: on a creature with a Detection FSM the interval is capped at
-        // [Brain] SensorInterval s (0 = the game's). The original is logged once per creature type with VerboseLog.
-        private static readonly HashSet<string> _sensorLogged = new HashSet<string>();
-
-        public static void AfterLosEnable(Micosmo.SensorToolkit.LOSSensor __instance)
-        {
-            try
-            {
-                float want = Plugin.SensorInterval.Value;
-                if (want <= 0f || !On || __instance == null || !IsCreatureSensor(__instance.transform)) return;
-                LogSensor(__instance.transform.root.name, "LOS", __instance.PulseMode.ToString(), __instance.PulseInterval,
-                    " rays " + __instance.NumberOfRays + " minVis " + __instance.MinimumVisibility + " avg " + (__instance.MovingAverageEnabled ? __instance.MovingAverageWindowSize.ToString() : "off"));
-                if (__instance.PulseMode == Micosmo.SensorToolkit.PulseRoutine.Modes.FixedInterval && __instance.PulseInterval > want) __instance.PulseInterval = want;
-            }
-            catch (Exception e) { Plugin.Log.LogError("Brain: " + e); }
-        }
-
-        public static void AfterRangeEnable(Micosmo.SensorToolkit.RangeSensor __instance)
-        {
-            try
-            {
-                float want = Plugin.SensorInterval.Value;
-                if (want <= 0f || !On || __instance == null || !IsCreatureSensor(__instance.transform)) return;
-                LogSensor(__instance.transform.root.name, "Range", __instance.PulseMode.ToString(), __instance.PulseInterval, "");
-                if (__instance.PulseMode == Micosmo.SensorToolkit.PulseRoutine.Modes.FixedInterval && __instance.PulseInterval > want) __instance.PulseInterval = want;
-            }
-            catch (Exception e) { Plugin.Log.LogError("Brain: " + e); }
-        }
-
-        private static bool IsCreatureSensor(Transform t)
-        {
-            var root = t.root;
-            foreach (var f in root.GetComponents<PlayMakerFSM>()) if (f != null && f.FsmName == "Detection") return true;
-            return false;
-        }
-
-        private static void LogSensor(string who, string kind, string mode, float interval, string extra)
-        {
-            if (!Plugin.VerboseLog.Value) return;
-            int cut = who.IndexOf('(');
-            string key = (cut > 0 ? who.Substring(0, cut) : who) + kind;
-            if (_sensorLogged.Contains(key)) return;
-            _sensorLogged.Add(key);
-            Plugin.Log.LogInfo("Brain: " + key + " sensor " + mode + " every " + interval + " s" + extra);
         }
 
         // For Aim: how far the body still has to turn to face its target, degrees; -1 when the brain is not steering this NPC (the game

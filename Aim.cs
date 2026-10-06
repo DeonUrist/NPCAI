@@ -19,10 +19,12 @@ namespace NPCAI
     //   [NpcAim] EngagePercent of it, so the NPC keeps following instead of firing at nothing. Beyond EngagePercent but within reach
     //   the NPC holds for EngagePatience seconds, then fires anyway (it may be stuck, or hiding).
     // - RandomWait: while holding fire the next check comes after HoldRecheckMin..Max seconds (1-4); otherwise the vanilla pause grows by
-    //   AimDelayPer5m for every 5 m the target is beyond AimBaseDistance ("takes longer to aim").
-    // WeaponRanges.BeforeRayHit widens the vanilla aim jitter by SpreadPer5m % for every 5 m beyond AimBaseDistance (Aim.SpreadFactor).
+    //   DelayPer5m for every 5 m the target is beyond BaseDistance ("takes longer to aim").
+    // Gunplay widens the vanilla aim jitter by SpreadPer5m % for every 5 m beyond BaseDistance (Api.SpreadFactor).
+    // (1.1.0) These are fixed values now; the two settings left are [NpcAim] AimTimeScale and EngagePercent.
     internal static class Aim
     {
+        internal const float BaseDistance = 5f, DelayPer5m = 0.25f, SpreadPer5m = 10f, EngagePatience = 5f, HoldRecheckMin = 1f, HoldRecheckMax = 4f;
         private sealed class State
         {
             public GameObject Owner;
@@ -42,8 +44,11 @@ namespace NPCAI
         // drop entries of NPCs that no longer exist (the RandomWait action would keep its whole FSM alive)
         private static readonly List<RandomWait> _deadWaits = new List<RandomWait>();
         private static readonly List<int> _deadStates = new List<int>();
+        private static float _nextSweep;
         internal static void Sweep()
         {
+            if (Time.unscaledTime < _nextSweep) return;      // runs from Runner.Update: a few times a minute is plenty
+            _nextSweep = Time.unscaledTime + 10f;
             _deadWaits.Clear();
             foreach (var kv in _waits) if (kv.Key.Fsm == null || kv.Key.Fsm.GameObject == null) _deadWaits.Add(kv.Key);
             foreach (var k in _deadWaits) _waits.Remove(k);
@@ -64,13 +69,13 @@ namespace NPCAI
         // Steps of 5 m beyond the base distance (0 at or below it).
         internal static int Steps(float distance)
         {
-            float beyond = distance - Plugin.AimBaseDistance.Value;
+            float beyond = distance - BaseDistance;
             return beyond <= 0f ? 0 : (int)(beyond / 5f);
         }
 
         internal static float SpreadFactor(float distance)
         {
-            return 1f + Steps(distance) * Plugin.SpreadPer5m.Value / 100f;
+            return 1f + Steps(distance) * SpreadPer5m / 100f;
         }
 
         // Harmony prefix on HutongGames.PlayMaker.Actions.SendEvent.OnEnter. false = the Activate is not sent (no burst this cycle).
@@ -105,7 +110,7 @@ namespace NPCAI
                 else if (d > engage)
                 {
                     if (st.HoldSince < 0f) st.HoldSince = Time.time;
-                    hold = Time.time - st.HoldSince < Plugin.EngagePatience.Value;
+                    hold = Time.time - st.HoldSince < EngagePatience;
                 }
                 else { hold = false; st.HoldSince = -1f; }
                 st.Holding = hold;
@@ -158,14 +163,13 @@ namespace NPCAI
                 else if (st != null && st.Holding)
                 {
                     // too far: look again in HoldRecheckMin..Max s (the NPC is on its way; a reaction time, and no per-frame work)
-                    float lo = Mathf.Max(0.1f, Plugin.HoldRecheckMin.Value), hi = Mathf.Max(lo, Plugin.HoldRecheckMax.Value);
-                    w.MyMin.Value = lo; w.MyMax.Value = hi;
+                    w.MyMin.Value = HoldRecheckMin; w.MyMax.Value = HoldRecheckMax;
                 }
                 else
                 {
                     var target = owner != null ? TargetOf(owner) : null;
                     if (target != null)
-                        extra = Steps(Vector3.Distance(owner.transform.position, target.transform.position)) * Plugin.AimDelayPer5m.Value;
+                        extra = Steps(Vector3.Distance(owner.transform.position, target.transform.position)) * DelayPer5m;
                     float scale = Mathf.Clamp(Plugin.AimTimeScale.Value, 1f, 300f) / 100f;    // [NpcAim] AimTimeScale: 50 % = twice as fast between bursts
                     w.MyMin.Value = (baseMin + extra) * scale; w.MyMax.Value = (baseMax + extra) * scale;
                 }

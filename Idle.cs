@@ -245,7 +245,7 @@ namespace NPCAI
             {
                 _dead.Clear();
                 foreach (var kv in _ctl) if (kv.Value.A.Owner == null) { _dead.Add(kv.Key); if (kv.Value.HasHome) _claimed.Remove(kv.Value.SpotId); }
-                foreach (var k in _dead) _ctl.Remove(k);
+                foreach (var k in _dead) { _ctl.Remove(k); _spawnOf.Remove(k); }
             }
         }
 
@@ -337,7 +337,7 @@ namespace NPCAI
             return On && owner != null && _ctl.TryGetValue(owner.GetInstanceID(), out c) && c.Inv;
         }
 
-        private static bool InvestigateOn { get { return Brain.On && Plugin.IdleGhostWalk.Value; } }
+        private static bool InvestigateOn { get { return Brain.On; } }
 
         // the walk to a ghost: starts once the brain has stood aside, follows the ghost when it moves, arrival -> the senses' search
         private static void InvestigateThink(Ctl c, float now)
@@ -345,19 +345,20 @@ namespace NPCAI
             var a = c.A; var g = a.Ghost;
             if (g == null) return;
             if (!Brain.IsWalk(a.Owner)) { c.NextThink = now + 0.1f; return; }      // the brain hasn't let go yet (its next think)
+            Vector3 goal; if (!Senses.GoalOf(a.Owner, out goal)) goal = g.Pos;    // (1.1.0) the flank point first, then the ghost
             if (c.Leg == Leg.Investigate)
             {
-                if (Flat(g.Pos - c.Goal) > 0.25f)
+                if (Flat(goal - c.Goal) > 0.25f)
                 {
-                    if (Flat(g.Pos - c.Goal) > 4f) { c.BestLeft = c.BestStraight = float.MaxValue; c.ProgressAt = now; }   // the spot moved: progress counts from here
-                    c.Goal = g.Pos;
+                    if (Flat(goal - c.Goal) > 4f) { c.BestLeft = c.BestStraight = float.MaxValue; c.ProgressAt = now; }   // the spot moved: progress counts from here
+                    c.Goal = goal;
                 }
                 LegThink(c, now, a.T.position);
                 return;
             }
             if (now < c.WaitUntil) return;
             c.InvOnMap = false; c.BestStraight = c.LastMapLeft = c.LastStraightLeft = float.MaxValue;
-            StartLeg(c, Leg.Investigate, g.Pos, now, 5f);
+            StartLeg(c, Leg.Investigate, goal, now, 5f);
         }
 
         internal static bool SearchWalking(GameObject owner)
@@ -423,7 +424,7 @@ namespace NPCAI
         {
             var leg = c.Leg;
             Stop(c);
-            if (leg == Leg.Investigate) { c.InvFails = 0; Log(c, "is at the ghost"); Senses.ArrivedAt(c.A.Owner); return; }   // the senses start the search (or a pursuit)
+            if (leg == Leg.Investigate) { c.InvFails = 0; bool flank = Senses.IsFlanking(c.A.Owner); Log(c, flank ? "is at its flank point" : "is at the ghost"); Senses.ArrivedAt(c.A.Owner); c.WaitUntil = flank ? now + 0.3f : c.WaitUntil; return; }   // the senses start the search (or a pursuit); after a flank point: the ghost itself
             if (leg == Leg.SearchOut) { c.SAtOrigin = false; c.WaitUntil = now + UnityEngine.Random.Range(2f, 4f); return; }   // the brain looks around
             if (leg == Leg.SearchBack) { c.SAtOrigin = true; c.WaitUntil = now + UnityEngine.Random.Range(1.5f, 3f); return; }
             if (leg == Leg.Home) { c.Tries = 0; c.AtHome = true; c.WaitUntil = now + UnityEngine.Random.Range(10f, 25f); Log(c, "is home"); }

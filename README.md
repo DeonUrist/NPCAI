@@ -7,6 +7,41 @@ fight, steer around obstacles and follow camp/cave/building maps. Camp NPCs retu
 and patrol. Busy friends can pass through each other. NPC aim pacing and firing decisions
 respect weapon reach. Flying creatures and seated Apocapatrol crews keep game movement.
 
+## Version 1.1.0
+
+NPCs now lose you when you break their line of sight (1.5 s, was 10 s of "memory" during
+which gunmen fired through the wall you had just stepped behind) and never shoot without a
+clear line. A human that loses you goes to where it last saw you and then *guesses* where
+you went (8 m off, then 16, then 24, along the way you were going); hounds, pups, Grimhounds,
+Nightwalkers, spiders, arachnids and scorpions track your real position (`[Senses] Trackers`).
+Hits, gunshots and shouts give rough spots, not your exact position. Noticing takes longer
+at a distance and in the dark (`NoticeFar`). Night is read from the game's clock (Azure sun
+elevation; `NightBelow` / `DayAbove`) - it had never been dark for NPC eyes. Shouts only
+while an NPC sees you: at once, then every 12-25 s (`TauntMin`/`TauntMax`; the game shouted
+every 0.1-4 s at anything, ghosts included), and a shout sends friends to look near you
+rather than handing them your live position. A gunshot or an explosion is checked by the
+nearest 4 NPCs plus everyone within 25 m (`GunshotResponders`, `GunshotNearRange`), not a
+whole camp. Cover: the game's own "hide" (a fast target) is now walked with the map instead
+of blindly, and a human below 50 % health (`[Brain] CoverBelow`, `CoverRange`, `CoverMin`/
+`CoverMax`) runs to a cover object or a spot its map shows breaks your line of sight and
+fights from there. A hit gunman steps aside and kneels more often; gunmen advance more when
+you have not fired for 8 s and never when hurt. Nightwalkers (chase state "trigger 2") are
+steered like everyone else. Map baking finishes what it starts (flying or driving past a
+hundred camps used to leave none of them mapped), bakes faster where the player is, and a
+camp an NPC needs is baked first. An NPC in cover is in its own HIDING state: it keeps its
+target and takes no ghosts until it comes out. A human sent to check a spot comes in from
+one side (`FlankDistance`/`FlankWidth`), the side alternating between NPCs. Same-faction
+NPCs walk through each other only in corridors (next to a wall on the map). Save/load bug
+fixed: NPCs alert at the save were given a dead ghost after the load and stood still for a
+minute and a half. Several per-frame allocations and leaks removed.
+
+Simplified: night comes from a table of hours (`NightHours`), the bake scheduler is
+"finish what you started, nearest first"; the old plain-ray shooter pathing, the pre-1.6
+ghost walk, sound muffling, the sensor-interval patch and the Apocaraider config import are
+gone; `PursuitMin/Max` became `Guesses` (3); `[NpcAim]` keeps `AimTimeScale`, `FacingTolerance`
+and `EngagePercent` (the distance delay, spread, patience and recheck pauses are fixed values);
+ghosts rank in two classes, seen beats heard, newest wins.
+
 ## Version 1.0.1
 
 NPCAI's six fallback weapon ranges are now fixed internal values rather than editable
@@ -32,9 +67,9 @@ would duplicate the original feature hooks.
 The normal BepInEx config is `com.denis.apocalypter.npcai.cfg`. ApocaSetter discovers
 this plugin's config through `[General] Apocasetter=true`; no ApocaSetter modifications
 or compile dependency are needed. Existing section/key names and defaults are retained
-for AI settings, including `[Gunplay] NpcAim`. The old Apocaraider config is read once
-when the new config does not already exist; later NPCAI settings always win.
-Advanced settings retain Apocaraider's unsaved hidden config semantics.
+for AI settings, including `[Gunplay] NpcAim`. Advanced settings keep the unsaved hidden
+config semantics: they are not written to disk; to change one, put the key in
+`BepInEx/config/NPCAI/hidden-settings.not-saved` (the same `[Section]` / `Key = value` format).
 
 Gunplay, GunplayHUD and WomenOfWasteland are optional. NPCAI declares a soft dependency
 on Gunplay for load ordering. NPCAI has no sibling assembly reference. If Gunplay is installed,

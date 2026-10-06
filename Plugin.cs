@@ -15,33 +15,33 @@ namespace NPCAI
     [BepInDependency("com.denis.apocalypter.gunplay", BepInDependency.DependencyFlags.SoftDependency)]
     public sealed class Plugin : BaseUnityPlugin
     {
-        public const string GUID = "com.denis.apocalypter.npcai", NAME = "NPCAI", VERSION = "1.0.1";
+        public const string GUID = "com.denis.apocalypter.npcai", NAME = "NPCAI", VERSION = "1.1.0";
         internal static ManualLogSource Log;
         internal static string Dir;
         internal static ConfigEntry<bool> VerboseLog;
         internal static ConfigEntry<bool> AimEnabled;
-        internal static ConfigEntry<float> AimTimeScale, FacingTolerance, AimBaseDistance, AimDelayPer5m, SpreadPer5m, EngagePercent, EngagePatience, HoldRecheckMin, HoldRecheckMax;
-        internal static ConfigEntry<bool> BrainEnabled, DropCheck, BrainLog, AimPose, ShooterPathing, ScaleWithActors;
-        internal static ConfigEntry<float> TurnRate, CrouchChance, SensorInterval, ReactionTime, FeelerLength, MeleeFeelerLength, FeelerAngle, AdvanceChance, AdvanceMin, AdvanceMax, StuckBackupSeconds, StuckMemorySeconds, MaxDistance;
-        internal static ConfigEntry<int> FeelerCount, StuckGiveUpCount, PursuitMin, PursuitMax;
-        internal static ConfigEntry<bool> SensesEnabled, MuffleSounds, SensesLog, ShowGhosts, BailOutAware;
-        internal static ConfigEntry<float> SightCone, SightRange, DarkSightRange, DaylightIntensity, NoticeSeconds, LoseSeconds, SearchSeconds, GhostTimeout, LookInterval, ArriveDistance, MuffleFactor, AllClearRange, StormSight, StormHearing, StormRadius, ShotRangePistol, ShotRangeSmg, ShotRangeRifle, ShotRangeSniper, ShotRangeShotgun, ShotRangeCrossbow, TauntRange, EngineMinRange, EngineMaxRange, EngineMinHp, EngineMaxHp, EngineIdleFactor, ThrowRange, BailOutAwareRange, ExplosionRange, BlastRange, PlayerShoutRange, ShoutCooldown, ShoutVolume;
+        internal static ConfigEntry<float> AimTimeScale, FacingTolerance, EngagePercent;
+        internal static ConfigEntry<bool> BrainEnabled, DropCheck, BrainLog, AimPose, ScaleWithActors;
+        internal static ConfigEntry<float> TurnRate, CrouchChance, ReactionTime, FeelerLength, MeleeFeelerLength, FeelerAngle, AdvanceChance, AdvanceMin, AdvanceMax, StuckBackupSeconds, StuckMemorySeconds, MaxDistance;
+        internal static ConfigEntry<int> FeelerCount, StuckGiveUpCount, Guesses;
+        internal static ConfigEntry<bool> SensesEnabled, SensesLog, ShowGhosts, BailOutAware;
+        internal static ConfigEntry<float> SightCone, SightRange, DarkSightRange, NoticeSeconds, LoseSeconds, SearchSeconds, GhostTimeout, LookInterval, ArriveDistance, AllClearRange, StormSight, StormHearing, StormRadius, ShotRangePistol, ShotRangeSmg, ShotRangeRifle, ShotRangeSniper, ShotRangeShotgun, ShotRangeCrossbow, TauntRange, EngineMinRange, EngineMaxRange, EngineMinHp, EngineMaxHp, EngineIdleFactor, ThrowRange, BailOutAwareRange, ExplosionRange, BlastRange, PlayerShoutRange, ShoutCooldown, ShoutVolume;
         internal static ConfigEntry<Key> ShoutKey, ShoutModifier;
         internal static ConfigEntry<string> ShoutBlocksButtons;
-        internal static ConfigEntry<string> NpcShotRanges, HumanFactions, BlastPrefabs;
+        internal static ConfigEntry<string> NpcShotRanges, HumanFactions, BlastPrefabs, Trackers, NightHours;
+        internal static ConfigEntry<float> NoticeFar, FlankDistance, FlankWidth, GuessRadius, TauntMin, TauntMax, GunshotNearRange, CoverBelow, CoverRange, CoverMin, CoverMax;
+        internal static ConfigEntry<int> GunshotResponders;
         internal static ConfigEntry<bool> NavEnabled, NavLog, ShowNav, NavDump, IdleEnabled, IdleCoyotes, FriendsPassThrough;
         internal static ConfigEntry<float> MoveFullSpeedAngle, MoveSlowestAngle, MoveSlowestSpeed, BlockedRatio, BlockedSeconds, BlockedMemory;
         internal static ConfigEntry<float> IdleReturnDelay, IdleRetrySeconds, IdleWalkRadius;
         internal static ConfigEntry<int> IdleReturnTries;
-        internal static ConfigEntry<bool> IdleGhostWalk;
-        internal static ConfigEntry<float> NavBakeRange, NavCellSize, NavMargin, NavMaxStep, NavBakeBudgetMs, NavFieldSeconds;
+                internal static ConfigEntry<float> NavBakeRange, NavCellSize, NavMargin, NavMaxStep, NavBakeBudgetMs, NavFieldSeconds;
         private static ConfigFile _hidden;
         private static ConfigEntry<T> H<T>(string section, string key, T value, ConfigDescription description) { return _hidden.Bind(section, key, value, description); }
         private static ConfigEntry<T> H<T>(string section, string key, T value, string description) { return _hidden.Bind(section, key, value, description); }
         private static GameObject _runner;
         private void Awake()
         {
-            bool existing = File.Exists(Config.ConfigFilePath);
             Log = Logger; Dir = Path.GetDirectoryName(Info.Location);
             _hidden = new ConfigFile(Path.Combine(Paths.ConfigPath, "NPCAI/hidden-settings.not-saved"), false) { SaveOnConfigSet = false };
             Config.Bind("General", "Apocasetter", true, "Show this mod in the Apocasetter Mods menu");
@@ -57,7 +57,6 @@ namespace NPCAI
             SightCone = Config.Bind("Detection", "SightCone", 100f, new ConfigDescription("Width of an NPC's field of view, degrees.", new AcceptableValueRange<float>(10f, 360f)));
             SightRange = Config.Bind("Detection", "SightRange", 100f, new ConfigDescription("How far an NPC sees in daylight, m (and at any light if your flashlight is on).", new AcceptableValueRange<float>(5f, 300f)));
             DarkSightRange = Config.Bind("Detection", "DarkSightRange", 5f, new ConfigDescription("How far an NPC sees in full darkness, m.", new AcceptableValueRange<float>(0f, 100f)));
-            MuffleSounds = H("Detection", "MuffleSounds", false, "Walls muffle sounds: an NPC with no line to a sound hears it only within half its range.");
             ScaleWithActors = Config.Bind("Pathfinding", "ScaleWithActors", false, "With many NPCs around, each one thinks less often (saves CPU in big fights).");
             FriendsPassThrough = Config.Bind("Pathfinding", "FriendsPassThrough", true, "NPCs of the same faction walk through each other while they fight, search or walk home - no bumping, no blocking a passage. Solid again once they are idle.");
             IdleEnabled = Config.Bind("Pathfinding", "EnableIdleBehavior", true, "Camp raiders who lose you go back to their spawn spot, and walk a short round in their camp while nothing happens.");
@@ -71,21 +70,9 @@ namespace NPCAI
             FacingTolerance = H("NpcAim", "FacingTolerance", 8f, new ConfigDescription(
                 "An NPC fires only once its body faces you within this many degrees (it turns at [Brain] TurnRate); until then it keeps turning and checks again every 0.1-0.2 s.",
                 new AcceptableValueRange<float>(0f, 90f)));
-            AimBaseDistance = H("NpcAim", "AimBaseDistance", 5f, new ConfigDescription(
-                "Up to this distance, m, NPCs aim and spread as the game does; every 5 m beyond it adds AimDelayPer5m and SpreadPer5m.", new AcceptableValueRange<float>(0f, 200f)));
-            AimDelayPer5m = H("NpcAim", "AimDelayPer5m", 0.25f, new ConfigDescription(
-                "Seconds added to the pause between an NPC's bursts for every 5 m the target is beyond AimBaseDistance.", new AcceptableValueRange<float>(0f, 5f)));
-            SpreadPer5m = H("NpcAim", "SpreadPer5m", 10f, new ConfigDescription(
-                "% added to the NPC's aim spread for every 5 m the target is beyond AimBaseDistance.", new AcceptableValueRange<float>(0f, 100f)));
             EngagePercent = H("NpcAim", "EngagePercent", 85f, new ConfigDescription(
                 "NPCs open fire once the target is within this % of the gun's reach; farther away they keep closing in. Never beyond the reach itself.",
                 new AcceptableValueRange<float>(1f, 100f)));
-            EngagePatience = H("NpcAim", "EngagePatience", 5f, new ConfigDescription(
-                "Seconds an NPC within reach but beyond EngagePercent keeps closing in before it fires anyway (stuck, hiding...).", new AcceptableValueRange<float>(0f, 60f)));
-            HoldRecheckMin = H("NpcAim", "HoldRecheckMin", 1f, new ConfigDescription(
-                "While holding fire (target too far), the NPC looks again after a random pause between HoldRecheckMin and HoldRecheckMax seconds: its reaction time once you come into reach.",
-                new AcceptableValueRange<float>(0.1f, 30f)));
-            HoldRecheckMax = H("NpcAim", "HoldRecheckMax", 4f, new ConfigDescription("See HoldRecheckMin.", new AcceptableValueRange<float>(0.1f, 30f)));
             ReactionTime = H("Brain", "ReactionTime", 100f, new ConfigDescription(
                 "How quickly NPCs think and react, as % of the default: every wait of the brain (looks, backing out of a stuck, resting, keeping a way around an obstacle, rechecks while holding) is scaled by this. 50 = twice as quick, 500 = five times slower.",
                 new AcceptableValueRange<float>(1f, 500f)));
@@ -97,33 +84,40 @@ namespace NPCAI
                 "% chance that a gunman kneels when he takes a shooting position (humans only; he stands up when he moves again). He is harder to hit kneeling: his hitbox shrinks with him.",
                 new AcceptableValueRange<float>(0f, 100f)));
             FeelerLength = H("Brain", "FeelerLength", 3.5f, new ConfigDescription("How far ahead a moving NPC looks for obstacles, m.", new AcceptableValueRange<float>(1f, 10f)));
-            SensorInterval = H("Brain", "SensorInterval", 0.1f, new ConfigDescription(
-                "How often an NPC's eyes look, s: the game's sensors pulse on a slow fixed interval, so an NPC noticed you a second or two after you came into view. 0 = the game's own interval.",
-                new AcceptableValueRange<float>(0f, 5f)));
             MeleeFeelerLength = H("Brain", "MeleeFeelerLength", 2.5f, new ConfigDescription("How far ahead a melee NPC looks, m (they turn quicker than a gunman needs).", new AcceptableValueRange<float>(1f, 10f)));
-            ShooterPathing = H("Brain", "ShooterPathing", true,
-                "Gunmen on the move use the melee pathing too: body-wide feelers that see low rocks, posts and fence bars, a committed way around an obstacle, wall following. Off = the simpler rays of 0.7.0 (cheaper; they stop to shoot anyway).");
             FeelerAngle = H("Brain", "FeelerAngle", 60f, new ConfigDescription("Half-angle of the feeler fan around the direction to the target, degrees.", new AcceptableValueRange<float>(15f, 120f)));
             FeelerCount = H("Brain", "FeelerCount", 7, new ConfigDescription("Feeler rays per look (odd; fewer = cheaper, coarser).", new AcceptableValueRange<int>(3, 15)));
             DropCheck = H("Brain", "DropCheck", true, "A moving NPC also checks for ground 1.5 m along its chosen direction and picks another when there is a drop (one extra ray).");
             AdvanceChance = H("Brain", "AdvanceChance", 10f, new ConfigDescription(
-                "A gunman holding a shooting position rolls this % at every hold recheck ([NpcAim] HoldRecheckMin..Max s) to run toward you for AdvanceMin..AdvanceMax s instead.", new AcceptableValueRange<float>(0f, 100f)));
+                "A gunman holding a shooting position rolls this % at every hold recheck (1-4 s) to run toward you for AdvanceMin..AdvanceMax s instead.", new AcceptableValueRange<float>(0f, 100f)));
             AdvanceMin = H("Brain", "AdvanceMin", 2f, new ConfigDescription("Shortest advance, s.", new AcceptableValueRange<float>(0.5f, 20f)));
             AdvanceMax = H("Brain", "AdvanceMax", 4f, new ConfigDescription("Longest advance, s.", new AcceptableValueRange<float>(0.5f, 20f)));
             StuckBackupSeconds = H("Brain", "StuckBackupSeconds", 0.8f, new ConfigDescription("A stuck NPC backs up this long, s, before trying another way.", new AcceptableValueRange<float>(0.1f, 5f)));
             StuckMemorySeconds = H("Brain", "StuckMemorySeconds", 5f, new ConfigDescription("How long the heading it got stuck on is avoided, s.", new AcceptableValueRange<float>(0f, 60f)));
             StuckGiveUpCount = H("Brain", "StuckGiveUpCount", 3, new ConfigDescription("Stucks within 10 s after which the NPC stands still for a second (facing you) before trying again.", new AcceptableValueRange<int>(1, 20)));
+            CoverBelow = H("Brain", "CoverBelow", 50f, new ConfigDescription("A fighting human whose health drops below this % runs to cover (a cover object of the camp, or a spot its map shows breaks your line of sight, within CoverRange) and fights from there for CoverMin..CoverMax s. 0 = off.", new AcceptableValueRange<float>(0f, 100f)));
+            CoverRange = H("Brain", "CoverRange", 25f, new ConfigDescription("How far a cover spot may be, m.", new AcceptableValueRange<float>(3f, 100f)));
+            CoverMin = H("Brain", "CoverMin", 20f, new ConfigDescription("Shortest stay in cover, s (it leaves early when you come within 8 m).", new AcceptableValueRange<float>(1f, 300f)));
+            CoverMax = H("Brain", "CoverMax", 40f, new ConfigDescription("Longest stay in cover, s.", new AcceptableValueRange<float>(1f, 300f)));
             MaxDistance = H("Brain", "MaxDistance", 150f, new ConfigDescription("NPCs farther than this from their target move the game's way (no cost).", new AcceptableValueRange<float>(20f, 1000f)));
-            DaylightIntensity = H("Senses", "DaylightIntensity", 0f, new ConfigDescription("Main-light intensity that counts as full daylight. 0 = Enviro's own sun setting. Raise it if nights feel too bright to NPCs, lower it if days feel dark (VerboseLog prints the light reading every minute).", new AcceptableValueRange<float>(0f, 20f)));
-            NoticeSeconds = H("Senses", "NoticeSeconds", 0.2f, new ConfigDescription("How long a target has to be in view before the NPC reacts, s.", new AcceptableValueRange<float>(0f, 5f)));
-            LoseSeconds = H("Senses", "LoseSeconds", 10f, new ConfigDescription("How long a target can be out of view before the NPC counts it as lost and goes to where it last saw it, s.", new AcceptableValueRange<float>(0f, 10f)));
+            NightHours = H("Senses", "NightHours", "20=100, 21=75, 22=35, 23=0, 4=35, 5=75, 6=100",
+                "How bright it is to NPC eyes by the game clock, hour=percent of daylight (100 = SightRange, 0 = DarkSightRange), straight lines in between, wrapping at midnight.");
+            FlankDistance = H("Senses", "FlankDistance", 15f, new ConfigDescription("A human going to check a spot at least this far away does not walk straight at it: it comes in from one side (FlankWidth m off the line, 60 % of the way), the side alternating between NPCs. 0 = off. Trackers go straight.", new AcceptableValueRange<float>(0f, 200f)));
+            FlankWidth = H("Senses", "FlankWidth", 10f, new ConfigDescription("See FlankDistance, m.", new AcceptableValueRange<float>(0f, 50f)));
+            NoticeSeconds = H("Senses", "NoticeSeconds", 0.2f, new ConfigDescription("How long a target has to be in view before the NPC reacts, s (up close, within 15 m).", new AcceptableValueRange<float>(0f, 5f)));
+            NoticeFar = H("Senses", "NoticeFar", 2f, new ConfigDescription("... and at the edge of its sight, s (in between it scales with the distance; up to twice as long in the dark).", new AcceptableValueRange<float>(0f, 10f)));
+            LoseSeconds = H("Senses", "LoseSeconds", 1.5f, new ConfigDescription("How long a target can be out of view before the NPC counts it as lost and goes to where it last saw it, s.", new AcceptableValueRange<float>(0f, 10f)));
+            Guesses = H("Senses", "Guesses", 3, new ConfigDescription("How many times an NPC that lost you from sight goes to a new spot (a guess for humans, your real position for trackers) before it gives up and searches where it stands.", new AcceptableValueRange<int>(0, 10)));
+            GuessRadius = H("Senses", "GuessRadius", 8f, new ConfigDescription("A human that reaches the spot it last saw you and finds nothing guesses where you went: this far off (m) the first time, twice that the second, three times the third (PursuitMin..Max guesses). Trackers follow your real position instead.", new AcceptableValueRange<float>(0f, 50f)));
+            Trackers = H("Senses", "Trackers", "Hound,Grimhound,Pup,Nightwalker,Spider,Arachnid,Scorpion", "NPC types (name parts) that track you by smell: they go to where you really are when they lose sight, and know exactly where a hit came from.");
+            TauntMin = H("Senses", "TauntMin", 12f, new ConfigDescription("An NPC shouts only while it sees you: at once when it spots you, then after a pause of TauntMin..TauntMax seconds (the game shouted every 0.1-4 s while it had any target).", new AcceptableValueRange<float>(1f, 120f)));
+            TauntMax = H("Senses", "TauntMax", 25f, new ConfigDescription("See TauntMin.", new AcceptableValueRange<float>(1f, 120f)));
+            GunshotResponders = H("Senses", "GunshotResponders", 4, new ConfigDescription("How many NPCs go to check a gunshot or an explosion: the nearest this many, plus everyone within GunshotNearRange. 0 = everyone in earshot.", new AcceptableValueRange<int>(0, 50)));
+            GunshotNearRange = H("Senses", "GunshotNearRange", 25f, new ConfigDescription("See GunshotResponders, m.", new AcceptableValueRange<float>(0f, 300f)));
             SearchSeconds = H("Senses", "SearchSeconds", 30f, new ConfigDescription("How long an NPC looks around at the place it went to check before it loses interest, s.", new AcceptableValueRange<float>(0f, 120f)));
-            PursuitMin = H("Senses", "PursuitMin", 1, new ConfigDescription("An NPC that loses you from sight goes to where it last saw you and, finding nothing, follows to where you really are this many times at least before it starts searching.", new AcceptableValueRange<int>(0, 10)));
-            PursuitMax = H("Senses", "PursuitMax", 3, new ConfigDescription("... and this many times at most (rolled per chase).", new AcceptableValueRange<int>(0, 10)));
             GhostTimeout = H("Senses", "GhostTimeout", 60f, new ConfigDescription("An NPC walking to a spot it goes to check (a ghost) keeps going until it gets there; only if this many seconds pass with no news about that spot (the ghost not renewed or moved) does it give up the walk and search from where it is, s.", new AcceptableValueRange<float>(5f, 600f)));
             ArriveDistance = H("Senses", "ArriveDistance", 1.5f, new ConfigDescription("How close to the remembered spot counts as being there, m.", new AcceptableValueRange<float>(0.5f, 10f)));
             LookInterval = H("Senses", "LookInterval", 0.15f, new ConfigDescription("How often each NPC looks, s (a couple of rays per look).", new AcceptableValueRange<float>(0.05f, 2f)));
-            MuffleFactor = H("Senses", "MuffleFactor", 50f, new ConfigDescription("Hearing range through walls, % of the open-air range (with MuffleSounds).", new AcceptableValueRange<float>(0f, 100f)));
             ShotRangePistol = H("Senses", "ShotRangePistol", 80f, new ConfigDescription("A pistol or revolver shot is heard this far, m.", new AcceptableValueRange<float>(0f, 1000f)));
             ShotRangeSmg = H("Senses", "ShotRangeSmg", 120f, new ConfigDescription("An SMG shot is heard this far, m.", new AcceptableValueRange<float>(0f, 1000f)));
             ShotRangeRifle = H("Senses", "ShotRangeRifle", 150f, new ConfigDescription("A rifle or machine-gun shot is heard this far, m.", new AcceptableValueRange<float>(0f, 1000f)));
@@ -171,11 +165,9 @@ namespace NPCAI
             BlockedSeconds = H("Movement", "BlockedSeconds", 0.5f, new ConfigDescription("Over how many seconds that share is measured.", new AcceptableValueRange<float>(0.2f, 3f)));
             BlockedMemory = H("Movement", "BlockedMemory", 1.5f, new ConfigDescription("For how many seconds the direction it was blocked in is not taken again (on a map route).", new AcceptableValueRange<float>(0f, 10f)));
             IdleWalkRadius = H("Idle", "WalkRadius", 200f, new ConfigDescription("Camp walks only for NPCs within this distance of the camera, m.", new AcceptableValueRange<float>(20f, 1000f)));
-            IdleGhostWalk = H("Idle", "GhostWalk", true, "(1.6.0) A camp raider going to check a spot (a shot, a noise, where you were last seen) is walked there the way it walks home: the camp map to the exit on that side, then straight. Off: the fight brain walks it (pre-1.6).");
             NavEnabled = BrainEnabled;
             NavLog = SensesLog = BrainLog = VerboseLog;
             ShowGhosts = ShowNav;
-            LegacyConfig.Import(Config, Log, existing);
             WeaponRanges.RemoveLegacySettings(Config);
             try
             {
@@ -187,8 +179,6 @@ namespace NPCAI
                 h.Patch(AccessTools.Method(typeof(SmoothLookAt), "DoSmoothLookAt"), prefix: new HarmonyMethod(typeof(Brain), nameof(Brain.BeforeSmoothLookAt)));
                 h.Patch(AccessTools.Method(typeof(SendEvent), "OnEnter"), prefix: new HarmonyMethod(typeof(Brain), nameof(Brain.BeforeSendEvent)));
                 h.Patch(AccessTools.Method(typeof(AddForce), "DoAddForce"), prefix: new HarmonyMethod(typeof(Brain), nameof(Brain.BeforeAddForce)));
-                h.Patch(AccessTools.Method(typeof(Micosmo.SensorToolkit.LOSSensor), "OnEnable"), postfix: new HarmonyMethod(typeof(Brain), nameof(Brain.AfterLosEnable)));
-                h.Patch(AccessTools.Method(typeof(Micosmo.SensorToolkit.RangeSensor), "OnEnable"), postfix: new HarmonyMethod(typeof(Brain), nameof(Brain.AfterRangeEnable)));
             }
             catch (Exception e) { Log.LogError("Harmony patch failed, no NPC brain: " + e); }
             try
