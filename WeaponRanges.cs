@@ -125,6 +125,31 @@ namespace NPCAI
             info.IsGun = true; info.Kind = Classify(info.Weapon.name); kind = info.Kind;
             return true;
         }
+        // the gun model in the NPC's hand (the parent of its active fire_effect), independent of Gunplay
+        // The weapon model the NPC holds now: the active child of a hand bone that has a renderer (the way Apocaplayer's Props catalog
+        // finds the NPC weapon models; the WeaponType FSM activates one of the hand's gun models at spawn, the melee swing a machete).
+        // Fallback: the parent of an active muzzle flash ("fire_effect"), or an active crossbow renderer.
+        internal static Transform WeaponOf(GameObject owner)
+        {
+            if (owner == null) return null;
+            var all = owner.GetComponentsInChildren<Transform>(true);
+            foreach (var h in all)
+            {
+                string hn = h.name; int i = hn.LastIndexOf(':'); if (i >= 0) hn = hn.Substring(i + 1);
+                if (hn != "LeftHand" && hn != "RightHand") continue;
+                for (int c = 0; c < h.childCount; c++)
+                {
+                    var w = h.GetChild(c);
+                    if (w.gameObject.activeInHierarchy && w.GetComponentInChildren<Renderer>(false) != null) return w;
+                }
+            }
+            foreach (var t in all)
+                if (t.name == "fire_effect" && t.parent != null && t.parent.name != "fire_effect" && t.parent.gameObject.activeInHierarchy) return t.parent;
+            foreach (var t in all)
+                if (t.gameObject.activeInHierarchy && t.name.StartsWith("crossbow", StringComparison.OrdinalIgnoreCase) && t.GetComponent<Renderer>() != null) return t;
+            return null;
+        }
+
         internal static void Sweep()
         {
             if (Time.unscaledTime < _nextSweep) return;

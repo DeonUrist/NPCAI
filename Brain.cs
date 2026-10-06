@@ -52,6 +52,10 @@ namespace NPCAI
             public FsmGameObject Target;              // Detection.detectedObj
             public bool Ranged; public WeaponRanges.Kind Kind; public PlayMakerFSM MovementFsm; public float MadeAt, NextRangedCheck;
             public Animator Anim; public string AimState; public bool Frozen;   // the shooting animation held on its first frame = aiming
+            public NpcAnim.Rig Rig; public float RigTried; public bool Strafing;   // (1.1.1) Apocaplayer's clips on this gunman: aim / crouch / strafe / run
+            public Transform Weapon; public string WeaponKey;                       // the gun model in its hand and the pose table's key for it
+            public bool WeaponDirty; public float SpeedCap; public bool LocoRun, LocoStrafe, LocoMoving;   // slot hysteresis: walk/run, forward/sideways, still/moving                         // the game toggled something of this NPC (its gun models) -> re-find the gun; max ground speed for the clip that plays (no sliding)
+            public float StrafeDev;                                                  // (1.1.1) chasing with clips: the heading's angle off the facing when the body keeps facing the target and the legs strafe (0 = turn as usual)
             public int CanCrouch;                     // 0 unknown, 1 has the leg bones, -1 no
             public bool Crouched, PoseCaptured; public float Drop;
             public Transform Hips, LUpLeg, LLeg, RUpLeg, RLeg;
@@ -79,7 +83,7 @@ namespace NPCAI
             public float SpeedScale = 1f;              // < 1: queues behind a friend going the same way
             public int AvoidSide; public float AvoidUntil;            // passing a friend: the side, kept a moment (no left-right dither)
             public int FriendBumps; public float FriendBumpsSince;
-            public Vector3 MakeWayDir; public float MakeWayUntil, MakeWaySpeed = 1.8f;    // standing in a friend's way: a short step aside; hit: a quick sidestep
+            public Vector3 MakeWayDir; public float MakeWayUntil, MakeWaySpeed = 1.8f; public bool MakeWayLeft;    // standing in a friend's way: a short step aside; hit: a quick sidestep
             public readonly List<Vector3> Trail = new List<Vector3>(); public readonly List<byte> TrailKind = new List<byte>();   // [Debug] NavTrace
             public float NextTrail, NextTraceLog, NextTraceDump; public Vector3 TraceGoal; public string LegBlock = "";
             // (1.1.0) cover: the spot, when the stay ends, arrived there, started by the game's own "hide" (a fast target) or by low health
@@ -103,7 +107,7 @@ namespace NPCAI
         private static readonly float[] _scores = new float[32];
         private static readonly float[] _blocks = new float[32];
 
-        public static void OnSceneLoaded() { _npcs.Clear(); _ignored.Clear(); _active = 0; }
+        public static void OnSceneLoaded() { foreach (var kv in _npcs) NpcAnim.Stop(kv.Value.Rig); _npcs.Clear(); _ignored.Clear(); _active = 0; }
 
         internal static bool On { get { return Plugin.BrainEnabled != null && Plugin.BrainEnabled.Value; } }
         // [Brain] ReactionTime %: every wait of the brain (think interval, back-up, rest, side lock, no-progress, memory, LOS tolerance,
@@ -124,7 +128,7 @@ namespace NPCAI
                 foreach (var kv in _npcs)
                 {
                     var np = kv.Value;
-                    if (np.Owner == null) _dead.Add(kv.Key);
+                    if (np.Owner == null) { NpcAnim.Stop(np.Rig); _dead.Add(kv.Key); }
                     else if (np.Mode != Mode.Off) n++;
                     if (np.Owner != null && cam != null)
                     {
@@ -137,6 +141,7 @@ namespace NPCAI
                 _active = n;
                 _interval = (Plugin.ScaleWithActors.Value ? (n <= 5 ? 0.1f : n <= 10 ? 0.2f : n <= 20 ? 0.3f : 0.5f) : 0.1f) * R;
             }
+            if (NpcAnim.Available) RegisterPending();        // spawned gunmen get their rig before they ever engage
             bool on = On;
             float turn = Mathf.Max(10f, Plugin.TurnRate.Value) * dt;
             foreach (var kv in _npcs)
@@ -151,10 +156,13 @@ namespace NPCAI
                 if (n.Crouched && n.T.parent != null) Crouch(n, false);     // seated by Apocapatrol after all: stand up
                 if (now < n.MakeWayUntil && n.Rb != null && n.T.parent == null && n.Mode != Mode.Off)   // a friend needs past: a short step aside
                 {
-                    Vector3 v = n.MakeWayDir * n.MakeWaySpeed; v.y = n.Rb.velocity.y; n.Rb.velocity = v;
+                    Vector3 v = n.MakeWayDir * (n.Rig != null && n.SpeedCap > 0f ? Mathf.Min(n.MakeWaySpeed, n.SpeedCap) : n.MakeWaySpeed); v.y = n.Rb.velocity.y; n.Rb.velocity = v;
                 }
                 string state;
-                if (!Engaged(n, out state))
+                bool engaged = Engaged(n, out state);
+                if (n.Ranged && n.Rig == null && now < n.MadeAt + 60f) TryRig(n);
+                if (n.Rig != null) Drive(n, state ?? AttackState(n), now, dt);                      // (1.1.1) Apocaplayer's clips: the clip for this frame, engaged or not
+                if (!engaged)
                 {
                     if (n.Mode != Mode.Off) SetMode(n, Mode.Off, "target lost");
                     continue;
@@ -172,7 +180,7 @@ namespace NPCAI
                 }
                 if (n.Mode == Mode.Off || n.Mode == Mode.BackUp || n.Mode == Mode.Walk) continue;     // Walk: Idle turns the body
                 bool cover = n.Mode == Mode.Cover, coverHold = cover && n.CoverArrived;
-                if (n.Frozen && !ChaseState(state) && !(cover && state == "hide")) Unfreeze(n);      // the burst (or a melee swing, a hide run): let the animation play
+                if (n.Rig == null && n.Frozen && !ChaseState(state) && !(cover && state == "hide")) Unfreeze(n);      // the burst (or a melee swing, a hide run): let the animation play
                 bool steering = (n.Mode == Mode.Chase || n.Mode == Mode.Advance || (cover && !coverHold)) && n.HasHeading && state != "attack_melee" && (state != "hide" || cover);
                 if (!ChaseState(state) && state != "attack_ranged" && !steering && !coverHold) continue;   // melee swing, hide run ...: the game's own facing
                 // (1.4.6) a moving NPC is turned to its steered heading in every Attack state but the swing / hide: the run velocity is ours in all
@@ -180,6 +188,7 @@ namespace NPCAI
                 var target = n.Target.Value;
                 if (target == null) continue;
                 Vector3 to;
+                n.StrafeDev = 0f;
                 if (n.Mode == Mode.Search)
                 {
                     if (Idle.SearchWalking(n.Owner)) continue;      // walking its search round ([Idle]): the round turns the body
@@ -192,7 +201,22 @@ namespace NPCAI
                 }
                 else if (n.Mode == Mode.Hold || n.Mode == Mode.Rest || coverHold || state == "attack_ranged" || now < n.FaceTargetUntil)
                     to = target.transform.position - n.T.position;
-                else if (n.HasHeading) to = Quaternion.Euler(0f, n.Heading, 0f) * Vector3.forward;
+                else if (n.HasHeading)
+                {
+                    to = Quaternion.Euler(0f, n.Heading, 0f) * Vector3.forward;
+                    // (1.1.1) with strafe clips a small detour (a friend, a post, a dodge: heading within StrafeAngle of the target) is walked
+                    // sideways facing the target instead of turning the body; a real turn (a wall, a corner) turns it as before
+                    n.StrafeDev = 0f;
+                    if (n.Rig != null && (n.Mode == Mode.Chase || n.Mode == Mode.Advance) && n.Dist < 30f)
+                    {
+                        Vector3 tt = target.transform.position - n.T.position; tt.y = 0f;
+                        if (tt.sqrMagnitude > 0.01f)
+                        {
+                            float dev = Mathf.DeltaAngle(Quaternion.LookRotation(tt, Vector3.up).eulerAngles.y, n.Heading);
+                            if (Mathf.Abs(dev) <= Plugin.StrafeAngle.Value) { to = tt; n.StrafeDev = dev; }
+                        }
+                    }
+                }
                 else to = target.transform.position - n.T.position;
                 to.y = 0f;
                 if (to.sqrMagnitude < 0.0001f) continue;
@@ -205,6 +229,30 @@ namespace NPCAI
         private static bool ChaseState(string s) { return s == "trigger" || s == "run" || s == "trigger 2"; }
 
         // the brain is in charge only while the Attack FSM runs with a target, the NPC stands on its own (not seated in a car) and is near
+        // the Attack FSM's state when it exists (engaged or not; null when it is not initialised)
+        private static string AttackState(Npc n)
+        {
+            var fsm = n.Attack != null ? n.Attack.Fsm : null;
+            return fsm != null && fsm.Initialized ? fsm.ActiveStateName : null;
+        }
+
+        // CreateObject postfix (Senses): a spawned NPC is registered as soon as its FSMs are up, so its gun is in the right hand from the
+        // first frames, not only when it first engages
+        private static readonly List<GameObject> _pending = new List<GameObject>();
+        internal static void Spawned(GameObject made) { if (made != null && _pending.Count < 200) _pending.Add(made); }
+        private static void RegisterPending()
+        {
+            if (_pending.Count == 0) return;
+            for (int i = _pending.Count - 1; i >= 0; i--)
+            {
+                var go = _pending[i];
+                if (go == null) { _pending.RemoveAt(i); continue; }
+                if (!go.activeInHierarchy) continue;
+                var n = Of(go);
+                if (n != null || !_retry) _pending.RemoveAt(i);       // registered, or not an NPC of ours
+            }
+        }
+
         private static bool Engaged(Npc n, out string state)
         {
             state = null;
@@ -450,13 +498,16 @@ namespace NPCAI
                 // a shooter that is hit sidesteps 2-3 m (SideStepSpeed m/s for SideStepSeconds), at most every 1.5 s, and kneels more often
                 float now = Time.time;
                 if (now < n.MakeWayUntil + 1.5f) return;
-                Vector3 dir = n.T.right * (UnityEngine.Random.value < 0.5f ? -1f : 1f);
-                Vector3 origin = n.Col != null ? n.Col.bounds.center : n.T.position + Vector3.up;
-                if (Physics.Raycast(origin, dir, 2.5f, PathMask, QueryTriggerInteraction.Ignore)) dir = -dir;      // a wall that way: the other way
-                n.MakeWayDir = dir; n.MakeWaySpeed = 3.5f; n.MakeWayUntil = now + 0.7f;
                 if (n.Crouched) Crouch(n, false);
                 else if (n.Ranged && Plugin.CrouchChance.Value > 0f && UnityEngine.Random.Range(0f, 100f) < Plugin.CrouchChance.Value * 2f) Crouch(n, true);
-                if (Plugin.BrainLog.Value) Plugin.Log.LogInfo("Brain: " + n.Owner.name + " is hit, sidesteps");
+                if (n.Rig == null) return;        // no strafe clips (Apocaplayer not installed): no sidestep - sliding without an animation looks wrong
+                bool left = UnityEngine.Random.value < 0.5f;
+                Vector3 dir = n.T.right * (left ? -1f : 1f);
+                Vector3 origin = n.Col != null ? n.Col.bounds.center : n.T.position + Vector3.up;
+                if (Physics.Raycast(origin, dir, 2.5f, PathMask, QueryTriggerInteraction.Ignore)) { dir = -dir; left = !left; }      // a wall that way: the other way
+                n.MakeWayDir = dir; n.MakeWaySpeed = 2.2f; n.MakeWayUntil = now + 0.9f;
+                StrafeClip(n, left);
+                if (Plugin.BrainLog.Value) Plugin.Log.LogInfo("Brain: " + n.Owner.name + " is hit, sidesteps " + (left ? "left" : "right"));
             }
         }
 
@@ -942,6 +993,7 @@ namespace NPCAI
                 else if ((m == Mode.Search || m == Mode.Off) && was != Mode.Hold) { n.NextTraceDump = 0f; TraceDump(n, m == Mode.Search ? "reached the goal" : "chase over"); }
                 else if (m == Mode.Rest) TraceDump(n, "rests");
             }
+            if (m != Mode.Chase && m != Mode.Advance) n.StrafeDev = 0f;
             if (m == Mode.Chase || m == Mode.Advance) { n.HasHeading = false; if (was != Mode.Chase && was != Mode.Advance && was != Mode.BackUp) { n.BestDist = float.MaxValue; n.NoProgressSince = Time.time; n.Flipped = false; n.Side = 0; n.HasWaypoint = false; } }
             bool wasStill = was == Mode.Hold || was == Mode.Rest || was == Mode.Search || was == Mode.Walk, still = m == Mode.Hold || m == Mode.Rest || m == Mode.Search || m == Mode.Walk;
             if (m == Mode.Off) { if (wasStill) Move(n, n.Target != null && n.Target.Value != null); }   // (1.4.9) back to the game's run only with a target left - no target: idle, not a run on the spot
@@ -976,8 +1028,136 @@ namespace NPCAI
         // A holding gunman keeps the gun up: the Movement FSM's shooting animation (attack 2 / attack 4: a 0.2-0.6 s clip that starts with the gun
         // raised) is put on its first frame and the Animator frozen there. The burst plays it from the start again (Unfreeze in Tick), and after
         // the burst the Attack FSM's Animal_Run comes back as Animal_Idle (BeforeSendEvent) followed by this pose again.
+        // (1.1.1) With Apocaplayer's clips the body is driven from here every frame, like the player's third-person body (Apocaplayer Body.cs):
+        // the situation picks a slot (Idle, Run, WalkBack, StrafeLeft / Right, the Crouch ones) and whether the raised Fire set is used -
+        // a rifleman facing his target is aiming (the player's aim-down-sights: RifleFire held on its first frame, moving with the Fire set's
+        // clips), the burst (attack_ranged) is the Fire set playing for both kinds, a pistol is already up in PistolIdle. The gun sits in the
+        // right hand at that clip's entry of the weapon-pose table. Off the brain (idle at camp, searching, walking to a ghost, the melee
+        // swing, death) the rig stops and the game's own clips show with the gun in its own hand.
+        private static void Drive(Npc n, string state, float now, float dt)
+        {
+            var r = n.Rig;
+            NpcAnim.Tick(r, dt);
+            if (n.Strafing && now >= n.MakeWayUntil) n.Strafing = false;
+            if (r.Legs) { DriveLegs(n, state, r); return; }
+            // the gun: the WeaponType FSM picks one of the hand's gun models a frame after the spawn (and the game may toggle them later):
+            // whenever the game toggled an object of this NPC (AfterActivate) or the held model went inactive, find the active one again
+            if (n.WeaponDirty || (n.Weapon == null ? now >= n.RigTried + 0.5f : !n.Weapon.gameObject.activeInHierarchy))
+            {
+                n.WeaponDirty = false; n.RigTried = now;      // (nothing held: looked again twice a second at most)
+                if (n.Weapon == null || !n.Weapon.gameObject.activeInHierarchy) NpcAnim.Release(r);
+                var w = WeaponRanges.WeaponOf(n.Owner);
+                if (w != n.Weapon)
+                {
+                    n.Weapon = w; n.WeaponKey = NpcAnim.WeaponKey(w);
+                    if (Plugin.BrainLog.Value) Plugin.Log.LogInfo("Brain: " + n.Owner.name + " now holds " + (w != null ? n.WeaponKey : "nothing"));
+                }
+            }
+            bool gun = n.Weapon != null && NpcAnim.HasPoses(n.WeaponKey);   // a machete out, no gun model: the game's clips
+            bool dead = n.HpVar != null && n.HpMax > 0f && n.HpVar.Value <= 0f;
+            bool melee = state == "attack_melee";
+            if (!gun || dead || melee || n.T.parent != null || !Plugin.ApocaplayerClips.Value) { if (r.On) NpcAnim.Stop(r); n.Strafing = false; n.SpeedCap = 0f; return; }
+            bool cover = n.Mode == Mode.Cover, coverHold = cover && n.CoverArrived;
+            bool burst = state == "attack_ranged";
+            bool facing = n.Mode == Mode.Hold || n.Mode == Mode.Rest || coverHold || n.Mode == Mode.BackUp || n.Strafing;   // squared up to the target
+            string prefix = NpcAnim.Prefix(n.WeaponKey);
+            bool rifle = prefix == "Rifle";
+            // the body's real motion, like the player's body: speed and direction relative to the facing pick the slot
+            Vector3 pv = n.Rb != null ? n.Rb.velocity : Vector3.zero; pv.y = 0f;
+            float ground = pv.magnitude;
+            Vector3 local = ground > 0.01f ? n.T.InverseTransformDirection(pv) : Vector3.zero;
+            // with hysteresis on every border (still / moving at 0.25-0.6 m/s, walk / run at 2.2-3.2 m/s - the patrol walk is 2.5 -, forward /
+            // sideways at 0.8-1.3x): a speed that hovers at a border used to flip the clip twice a second, restarting the stride each time
+            n.LocoMoving = ground > (n.LocoMoving ? 0.25f : 0.6f);
+            n.LocoRun = ground > (n.LocoRun ? 2.2f : 3.2f);
+            float ax = Mathf.Abs(local.x), az = Mathf.Abs(local.z);
+            n.LocoStrafe = n.LocoMoving && ax > az * (n.LocoStrafe ? 0.8f : 1.3f);
+            string slot;
+            if (n.Strafing) slot = (n.Crouched ? "CrouchStrafe" : "Strafe") + (n.MakeWayLeft ? "Left" : "Right");   // the sidestep of Hit()
+            else if (!n.LocoMoving) slot = n.Crouched ? "CrouchIdle" : "Idle";
+            else if (n.LocoStrafe) slot = (n.Crouched ? "CrouchStrafe" : n.LocoRun ? "RunStrafe" : "Strafe") + (local.x < 0f ? "Left" : "Right");
+            else if (local.z < 0f) slot = n.Crouched ? "CrouchWalkBack" : "WalkBack";
+            else slot = n.Crouched ? "CrouchWalk" : n.LocoRun ? "Run" : "Walk";
+            // the Fire set: the burst, and a rifleman's aim whenever he is squared up to his target (not while running after him)
+            bool fire = burst || (rifle && facing);
+            string pose = fire ? NpcAnim.FirePose(slot) : slot;
+            bool still = slot == "Idle" || slot == "CrouchIdle";
+            float scale = 1f;
+            if (still) { n.SpeedCap = 0f; if (fire && !burst) scale = 0f; }          // the aim: the firing clip's first frame
+            else
+            {
+                // the clip plays at the body's speed over its own (0.5x-2x, Apocaplayer's ClipSpeed); the brain's own velocities are capped at
+                // 2x the clip's speed (SpeedCap: SetVelocity, the sidestep) so the feet never slide
+                float dummy; string clip = NpcAnim.ClipFor(prefix, pose, out dummy);
+                float native = NpcAnim.Native(clip, slot);
+                n.SpeedCap = native * 2f;
+                scale = Mathf.Clamp(ground / native, 0.5f, 2f);
+            }
+            NpcAnim.Play(r, prefix, pose, scale, n.Weapon, n.WeaponKey, !still);
+        }
+
+        // the legs rig (melee humans): the slot from the body's motion as above, layered over the game's own clip for the legs only;
+        // standing, swinging, dead or seated the game's clip has the whole body
+        private static void DriveLegs(Npc n, string state, NpcAnim.Rig r)
+        {
+            bool dead = n.HpVar != null && n.HpMax > 0f && n.HpVar.Value <= 0f;
+            if (dead || n.T.parent != null || !Plugin.ApocaplayerClips.Value) { if (r.On) NpcAnim.Stop(r); n.SpeedCap = 0f; return; }
+            Vector3 pv = n.Rb != null ? n.Rb.velocity : Vector3.zero; pv.y = 0f;
+            float ground = pv.magnitude;
+            Vector3 local = ground > 0.01f ? n.T.InverseTransformDirection(pv) : Vector3.zero;
+            n.LocoMoving = ground > (n.LocoMoving ? 0.25f : 0.6f);
+            n.LocoRun = ground > (n.LocoRun ? 2.2f : 3.2f);
+            float ax = Mathf.Abs(local.x), az = Mathf.Abs(local.z);
+            n.LocoStrafe = n.LocoMoving && ax > az * (n.LocoStrafe ? 0.8f : 1.3f);
+            bool swing = state == "attack_melee";
+            string slot;
+            if (!n.LocoMoving || swing) slot = "Idle";
+            else if (n.LocoStrafe) slot = (n.LocoRun ? "RunStrafe" : "Strafe") + (local.x < 0f ? "Left" : "Right");
+            else if (local.z < 0f) slot = "WalkBack";
+            else slot = n.LocoRun ? "Run" : "Walk";
+            if (slot == "Idle") { n.SpeedCap = 0f; NpcAnim.PlayLegs(r, "Walk", 1f, 0f); return; }     // weight 0: the game's clip alone (the walk clip idles underneath, ready)
+            float dummy; string clip = NpcAnim.ClipFor("", slot, out dummy);
+            float native = NpcAnim.Native(clip, slot);
+            n.SpeedCap = native * 2f;
+            NpcAnim.PlayLegs(r, slot, Mathf.Clamp(ground / native, 0.5f, 2f), 1f);
+        }
+
+        // AnimatorPlay.OnEnter prefix: the game plays a state on the Animator; a legs rig plays it on the controller inside its graph too
+        public static void BeforeAnimatorPlay(AnimatorPlay __instance)
+        {
+            try
+            {
+                var fsm = __instance.Fsm;
+                if (fsm == null) return;
+                var n = Get(fsm.GameObject);
+                if (n == null || n.Rig == null || !n.Rig.Legs || !n.Rig.On) return;
+                var go = fsm.GetOwnerDefaultTarget(__instance.gameObject);
+                if (go != null && go != n.Owner && (n.Anim == null || go != n.Anim.gameObject)) return;
+                string st = __instance.stateName != null ? __instance.stateName.Value : null;
+                int layer = __instance.layer != null && !__instance.layer.IsNone ? __instance.layer.Value : 0;
+                float t = __instance.normalizedTime != null && !__instance.normalizedTime.IsNone ? __instance.normalizedTime.Value : -1f;
+                NpcAnim.ForwardPlay(n.Rig, st, layer, t);
+            }
+            catch (Exception) { }
+        }
+
+        // ActivateGameObject(s).OnEnter postfix: the game toggled an object of this NPC (the WeaponType FSM's gun models, the melee
+        // machete ...): the rig re-finds the held weapon on its next frame. One dictionary lookup, only when the game toggles something.
+        public static void AfterActivate(FsmStateAction __instance)
+        {
+            try
+            {
+                var fsm = __instance.Fsm;
+                if (fsm == null) return;
+                var n = Get(fsm.GameObject);
+                if (n != null && n.Rig != null) n.WeaponDirty = true;
+            }
+            catch (Exception) { }
+        }
+
         private static void Aim(Npc n)
         {
+            if (n.Rig != null) return;      // Drive() picks the clip every frame
             if (!Plugin.AimPose.Value || n.Anim == null || string.IsNullOrEmpty(n.AimState)) return;
             try
             {
@@ -992,7 +1172,15 @@ namespace NPCAI
         {
             if (!n.Frozen) return;
             n.Frozen = false;
+            if (n.Rig != null) return;      // Drive() stops the rig when the mode / state calls for it
             if (n.Anim != null) n.Anim.speed = 1f;
+        }
+
+        // (1.1.1) the sidestep clip for Hit(): left = toward -right
+        private static void StrafeClip(Npc n, bool left)
+        {
+            if (n.Rig == null) return;
+            n.MakeWayLeft = left; n.Strafing = true;      // Drive() plays the (Fire)Strafe clip while MakeWayUntil lasts
         }
 
         // ---------- crouch ----------
@@ -1031,6 +1219,19 @@ namespace NPCAI
             if (on == n.Crouched) return;
             if (on)
             {
+                if (n.Rig != null)
+                {
+                    // Apocaplayer's crouch clips: no bone posing, just the shorter capsule (about 0.45 m lower) and the clip (Aim / strafe pick it)
+                    if (n.Capsule == null) { n.Capsule = n.Owner.GetComponent<CapsuleCollider>(); if (n.Capsule != null) { n.CapHeight = n.Capsule.height; n.CapCenter = n.Capsule.center; } }
+                    n.Crouched = true; n.Drop = 0.45f;
+                    if (n.Capsule != null && n.CapHeight > 0f)
+                    {
+                        float bottom = n.CapCenter.y - n.CapHeight * 0.5f;
+                        float h = Mathf.Max(n.Capsule.radius * 2f, n.CapHeight - n.Drop);
+                        n.Capsule.height = h; n.Capsule.center = new Vector3(n.CapCenter.x, bottom + h * 0.5f, n.CapCenter.z);
+                    }
+                    return;
+                }
                 if (!FindLegs(n)) return;
                 // kneeling: the hips end up about one thigh length above the ground (the right thigh stands on its knee)
                 float thigh = Vector3.Distance(n.LUpLeg.position, n.LLeg.position);
@@ -1068,7 +1269,7 @@ namespace NPCAI
             foreach (var kv in _npcs)
             {
                 var n = kv.Value;
-                if (!n.Crouched || n.Owner == null) continue;
+                if (!n.Crouched || n.Owner == null || n.Rig != null) continue;
                 if (n.Hips == null || n.LUpLeg == null || n.LLeg == null || n.RUpLeg == null || n.RLeg == null) { n.Crouched = false; continue; }
                 if (!n.PoseCaptured)
                 {
@@ -1341,6 +1542,7 @@ namespace NPCAI
             if (movement == null) return;
 
             n.Anim = owner.GetComponentInChildren<Animator>(true);
+            TryRig(n);
             try
             {
                 var mf = movement.Fsm;
@@ -1357,6 +1559,28 @@ namespace NPCAI
             }
             catch (Exception e) { Plugin.Verbose("Brain: no aim pose for " + owner.name + ": " + e.Message); }
         
+        }
+
+        // (1.1.1) Apocaplayer's clips for this gunman: its Animator (humanoid avatar) + its gun model (for the right-hand pose)
+        private static void TryRig(Npc n)
+        {
+            if (n.Rig != null || n.Anim == null || Time.time < n.RigTried + 2f) return;
+            n.RigTried = Time.time;
+            if (!NpcAnim.Available || !Plugin.ApocaplayerClips.Value) return;
+            if (n.Ranged)
+            {
+                n.Rig = NpcAnim.Make(n.Anim, n.T);
+                if (n.Rig == null) return;
+                n.WeaponDirty = true;      // Drive() finds the held gun model (and follows the game's swaps of it)
+                if (Plugin.BrainLog.Value) Plugin.Log.LogInfo("Brain: " + n.Owner.name + " animated with Apocaplayer's clips (gun -> " + n.Rig.RightHand.name + ")");
+            }
+            else
+            {
+                // a melee human (something in a hand): his own upper body and swing, Apocaplayer's legs for walking, running, strafing
+                if (WeaponRanges.WeaponOf(n.Owner) == null) { n.RigTried = Time.time + 1e8f; return; }
+                n.Rig = NpcAnim.MakeLegs(n.Anim, n.T);
+                if (n.Rig != null && Plugin.BrainLog.Value) Plugin.Log.LogInfo("Brain: " + n.Owner.name + " walks with Apocaplayer's legs");
+            }
         }
 
         private static Npc NpcOf(Fsm fsm, string fsmName)
@@ -1386,10 +1610,13 @@ namespace NPCAI
                     // deliberate movement only: no heading yet (the first think after the alert) -> stand; facing away from the heading -> slow
                     // down while turning (full speed within 30 deg, 40 % at 90, 10 % from 120: a big turn is made nearly on the spot, not as an arc)
                     if (!n.HasHeading) speed = 0f;
-                    else speed *= TurnSpeedFactor(Mathf.Abs(Mathf.DeltaAngle(n.T.eulerAngles.y, n.Heading)));
+                    else if (n.StrafeDev == 0f) speed *= TurnSpeedFactor(Mathf.Abs(Mathf.DeltaAngle(n.T.eulerAngles.y, n.Heading)));
                 }
+                if (n.Rig != null && n.SpeedCap > 0f) speed = Mathf.Clamp(speed, -n.SpeedCap, n.SpeedCap);   // (1.1.1) no faster than the clip can carry the feet
                 n.CmdSpeed = Mathf.Max(0f, speed);
-                Vector3 v = n.T.forward * speed;
+                // (1.1.1) strafing round a small detour: the legs go along the heading while the body faces the target
+                Vector3 fwd = n.StrafeDev != 0f && n.HasHeading ? Quaternion.Euler(0f, n.Heading, 0f) * Vector3.forward : n.T.forward;
+                Vector3 v = fwd * speed;
                 v.y = n.Rb.velocity.y;
                 n.Rb.velocity = v;
                 return false;

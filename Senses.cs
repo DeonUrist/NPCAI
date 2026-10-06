@@ -821,6 +821,7 @@ namespace NPCAI
                 string pname = PrefabOf(prefab);        // prefab assets are few: cached, so this hook costs no string per spawn
                 var made = __instance.storeObject != null ? __instance.storeObject.Value : null;
                 if (made != null && Nav.On && pname.Length > 5 && (pname[0] == 'C' || pname[0] == 'B')) Nav.Spawned(made);   // Camp_N / Cave_N / Building_N
+                if (made != null && Brain.On) Brain.Spawned(made);      // (1.1.1) gunmen get Apocaplayer's clips from their first frames
                 if (!On || Plugin.BlastRange.Value <= 0f) return;
                 string cfg = Plugin.BlastPrefabs.Value ?? "";
                 if (_blastNames == null || _blastSrc != cfg)

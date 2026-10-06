@@ -15,10 +15,10 @@ namespace NPCAI
     [BepInDependency("com.denis.apocalypter.gunplay", BepInDependency.DependencyFlags.SoftDependency)]
     public sealed class Plugin : BaseUnityPlugin
     {
-        public const string GUID = "com.denis.apocalypter.npcai", NAME = "NPCAI", VERSION = "1.1.0";
+        public const string GUID = "com.denis.apocalypter.npcai", NAME = "NPCAI", VERSION = "1.1.1";
         internal static ManualLogSource Log;
         internal static string Dir;
-        internal static ConfigEntry<bool> VerboseLog;
+        internal static ConfigEntry<bool> ApocaplayerClips, VerboseLog;
         internal static ConfigEntry<bool> AimEnabled;
         internal static ConfigEntry<float> AimTimeScale, FacingTolerance, EngagePercent;
         internal static ConfigEntry<bool> BrainEnabled, DropCheck, BrainLog, AimPose, ScaleWithActors;
@@ -29,7 +29,7 @@ namespace NPCAI
         internal static ConfigEntry<Key> ShoutKey, ShoutModifier;
         internal static ConfigEntry<string> ShoutBlocksButtons;
         internal static ConfigEntry<string> NpcShotRanges, HumanFactions, BlastPrefabs, Trackers, NightHours;
-        internal static ConfigEntry<float> NoticeFar, FlankDistance, FlankWidth, GuessRadius, TauntMin, TauntMax, GunshotNearRange, CoverBelow, CoverRange, CoverMin, CoverMax;
+        internal static ConfigEntry<float> StrafeAngle, NoticeFar, FlankDistance, FlankWidth, GuessRadius, TauntMin, TauntMax, GunshotNearRange, CoverBelow, CoverRange, CoverMin, CoverMax;
         internal static ConfigEntry<int> GunshotResponders;
         internal static ConfigEntry<bool> NavEnabled, NavLog, ShowNav, NavDump, IdleEnabled, IdleCoyotes, FriendsPassThrough;
         internal static ConfigEntry<float> MoveFullSpeedAngle, MoveSlowestAngle, MoveSlowestSpeed, BlockedRatio, BlockedSeconds, BlockedMemory;
@@ -95,6 +95,8 @@ namespace NPCAI
             StuckBackupSeconds = H("Brain", "StuckBackupSeconds", 0.8f, new ConfigDescription("A stuck NPC backs up this long, s, before trying another way.", new AcceptableValueRange<float>(0.1f, 5f)));
             StuckMemorySeconds = H("Brain", "StuckMemorySeconds", 5f, new ConfigDescription("How long the heading it got stuck on is avoided, s.", new AcceptableValueRange<float>(0f, 60f)));
             StuckGiveUpCount = H("Brain", "StuckGiveUpCount", 3, new ConfigDescription("Stucks within 10 s after which the NPC stands still for a second (facing you) before trying again.", new AcceptableValueRange<int>(1, 20)));
+            ApocaplayerClips = H("Brain", "ApocaplayerClips", true, "With Apocaplayer installed: gunmen play its clips (rifle / pistol idle, run, strafes, crouch, fire) with the gun in the right hand at its weapon poses. false = the game's own clips (also a quick A/B for performance).");
+            StrafeAngle = H("Brain", "StrafeAngle", 50f, new ConfigDescription("(with Apocaplayer's clips) A chasing gunman whose way round something is within this many degrees of the line to his target keeps facing the target and strafes along it instead of turning his body. 0 = always turn.", new AcceptableValueRange<float>(0f, 90f)));
             CoverBelow = H("Brain", "CoverBelow", 50f, new ConfigDescription("A fighting human whose health drops below this % runs to cover (a cover object of the camp, or a spot its map shows breaks your line of sight, within CoverRange) and fights from there for CoverMin..CoverMax s. 0 = off.", new AcceptableValueRange<float>(0f, 100f)));
             CoverRange = H("Brain", "CoverRange", 25f, new ConfigDescription("How far a cover spot may be, m.", new AcceptableValueRange<float>(3f, 100f)));
             CoverMin = H("Brain", "CoverMin", 20f, new ConfigDescription("Shortest stay in cover, s (it leaves early when you come within 8 m).", new AcceptableValueRange<float>(1f, 300f)));
@@ -179,6 +181,10 @@ namespace NPCAI
                 h.Patch(AccessTools.Method(typeof(SmoothLookAt), "DoSmoothLookAt"), prefix: new HarmonyMethod(typeof(Brain), nameof(Brain.BeforeSmoothLookAt)));
                 h.Patch(AccessTools.Method(typeof(SendEvent), "OnEnter"), prefix: new HarmonyMethod(typeof(Brain), nameof(Brain.BeforeSendEvent)));
                 h.Patch(AccessTools.Method(typeof(AddForce), "DoAddForce"), prefix: new HarmonyMethod(typeof(Brain), nameof(Brain.BeforeAddForce)));
+                h.Patch(AccessTools.Method(typeof(ActivateGameObject), "OnEnter"), postfix: new HarmonyMethod(typeof(Brain), nameof(Brain.AfterActivate)));
+                h.Patch(AccessTools.Method(typeof(AnimatorPlay), "OnEnter"), prefix: new HarmonyMethod(typeof(Brain), nameof(Brain.BeforeAnimatorPlay)));
+                var multi = AccessTools.TypeByName("HutongGames.PlayMaker.Actions.ActivateGameObjects");
+                if (multi != null) h.Patch(AccessTools.Method(multi, "OnEnter"), postfix: new HarmonyMethod(typeof(Brain), nameof(Brain.AfterActivate)));
             }
             catch (Exception e) { Log.LogError("Harmony patch failed, no NPC brain: " + e); }
             try

@@ -7,6 +7,33 @@ fight, steer around obstacles and follow camp/cave/building maps. Camp NPCs retu
 and patrol. Busy friends can pass through each other. NPC aim pacing and firing decisions
 respect weapon reach. Flying creatures and seated Apocapatrol crews keep game movement.
 
+## Version 1.1.1
+
+With **Apocaplayer** installed (its animation bundle and weapon-pose table), human NPCs are
+animated the way the player's third-person body is. Gunmen play its Rifle / Pistol clip sets
+with the gun in the right hand at Apocaplayer's curated per-weapon, per-animation pose
+(`GunPose.Effective`: the player's live table incl. `config/Apocaplayer/weapon-poses.txt`):
+the aim is `RifleFire` held on its first frame (the player's aim-down-sights), the burst the
+Fire set, sidesteps the (Fire)Strafe clips, backing up `WalkBack`, running `Run`, kneeling the
+Crouch set; the slot comes from the body's real velocity (speed and direction relative to
+the facing, with hysteresis and the foot phase carried from one cycle to the next). Clips
+play at the body's speed over their own and the body is capped at twice the clip's speed,
+so the feet never slide. The held gun is tracked (the WeaponType FSM's swap at spawn and any
+later toggle re-bind it) from the first frames, standing, walking, running and shooting; a
+machete, death or a seat hands the body back to the game's clips. Melee humans keep their
+own upper body and swing and get Apocaplayer's legs for walking, running and strafing
+(their controller runs inside the graph, the game's AnimatorPlay calls are forwarded).
+Any animated human sidesteps when hit and, chasing, keeps facing you while it skirts an
+obstacle or comes in at an angle (`[Brain] StrafeAngle`, 50 deg) instead of turning like a
+car. Without Apocaplayer nothing changes: the game's clips, no sidesteps.
+Hidden `[Brain] ApocaplayerClips` (true) turns it off. Spawned NPCs are registered at once.
+
+`tools/NPCAIProbe` is the debugging helper (source + DLL): drop its DLL into
+`BepInEx/plugins/NPCAIProbe/` and it writes `BepInEx/NPCAIProbe/` - `report.txt` (every FSM
+assumption checked live), `transitions.txt`, `anim.log` (what each gunman near you plays vs
+what the game plays vs the hands), `perf.log` (frame time, every NPCAI subsystem's time,
+spikes over 8 ms by method), `health.log`, `nav.txt`, `prefabs/`. Remove it for normal play.
+
 ## Version 1.1.0
 
 NPCs now lose you when you break their line of sight (1.5 s, was 10 s of "memory" during
