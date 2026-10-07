@@ -15,7 +15,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Remove="verification/**/*.cs;.verification/**/*.cs" />
+    <Compile Remove="verification/**/*.cs;.verification/**/*.cs;tools/**/*.cs" />
     <None Remove="verification/**;.verification/**" />
     <Reference Include="BepInEx"><HintPath>$(BepInExCore)\BepInEx.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="0Harmony"><HintPath>$(BepInExCore)\0Harmony.dll</HintPath><Private>false</Private></Reference>
@@ -35,6 +35,8 @@
     <Reference Include="Micosmo.SensorToolkit"><HintPath>$(ManagedDir)\Micosmo.SensorToolkit.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="Assembly-CSharp-firstpass"><HintPath>$(ManagedDir)\Assembly-CSharp-firstpass.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="Assembly-CSharp"><HintPath>$(ManagedDir)\Assembly-CSharp.dll</HintPath><Private>false</Private></Reference>
+    <!-- (1.2.0) Apocaplayer's ModAPI animates the gunmen; optional at runtime (soft dependency, every call is in ApBody behind ApBody.Available) -->
+    <Reference Include="Apocaplayer"><HintPath>$(GameDir)\BepInEx\plugins\Apocaplayer\Apocaplayer.dll</HintPath><Private>false</Private></Reference>
   </ItemGroup>
 
   <Target Name="ValidateGameDir" BeforeTargets="ResolveAssemblyReferences">

@@ -7,6 +7,35 @@ fight, steer around obstacles and follow camp/cave/building maps. Camp NPCs retu
 and patrol. Busy friends can pass through each other. NPC aim pacing and firing decisions
 respect weapon reach. Flying creatures and seated Apocapatrol crews keep game movement.
 
+## Version 1.2.0
+
+With **Apocaplayer 2.2.0** or newer installed, gunmen are animated by Apocaplayer's **ModAPI**: the
+player's own third-person body, clip for clip and decision for decision, on the NPC. NPCAI only
+tells it what the gunman does; the rest is the player's logic.
+
+- **Moving**: idle, 8 directions x walk / run / sprint, crouch idle and 8 crouched walks for every
+  gun, from the body's real velocity; the relaxed low-ready walk / run while chasing, the aiming
+  set when squared up (hold, cover, backing up, the hit sidestep) or firing; smooth direction
+  changes, turns in place with stepping feet, the walk-to-stop.
+- **Crouching**: riflemen **and pistolmen** kneel again (the pistol's hands over the crouched legs,
+  as on the player); the capsule is 0.45 m shorter while kneeling.
+- **Aiming and firing**: the player's aim / fire clips, the aim lift and the spine bent toward the
+  target's height.
+- **Reloads**: the player's `RifleReload` / `PistolReload` on the hands over whatever the legs do.
+  Guns the player loads **one round at a time** (revolver, Slambergs, Redmarks, Rochesters - read
+  from the player's copy of the gun) load the rounds fired one by one (hidden `[NpcAim]
+  RoundSeconds`, 0.6 s a round); the rest play the whole clip.
+- **Pump / bolt guns** (Slamberg, Redmark): `ShotgunPump` racks the gun after every burst that
+  didn't empty it, and after the reload.
+- **Hops** over low lips play the player's jump (take-off, in the air, landing).
+- The gun sits in the right hand at the player's per-weapon, per-clip weapon poses. Dead, seated
+  (Apocapatrol) or swinging a machete, the body goes back to the game's own clips and the gun to
+  its own hand.
+
+Apocaplayer stays optional (a soft dependency; without it, or with an older one, the game's clips).
+`tools/depcheck/depcheck.py` checks the built DLL: only `ApBody` touches Apocaplayer.
+NPCAI 1.1.x's own animation code (`NpcAnim`, the melee legs rig) is gone.
+
 ## Version 1.1.2
 
 Gunmen reload. The magazine of each gun is the player's own weapon's capacity (read from the

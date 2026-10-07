@@ -417,6 +417,7 @@ namespace NPCAI
             if (Physics.Raycast(knee, fwd, reach + 0.2f, FeelMask | (1 << 14), QueryTriggerInteraction.Ignore)) return;
             c.LastHop = now;
             c.Rb.AddForce(Vector3.up * 3.2f + fwd * 1.5f, ForceMode.VelocityChange);
+            Brain.HopAnim(c.A.Owner);                                    // (1.2.0) the jump on an animated body
             Log(c, "hops over a low edge (" + h.collider.name + ")");
         }
 

@@ -13,14 +13,15 @@ namespace NPCAI
 {
     [BepInPlugin(GUID, NAME, VERSION)]
     [BepInDependency("com.denis.apocalypter.gunplay", BepInDependency.DependencyFlags.SoftDependency)]
+    [BepInDependency("com.denis.apocalypter.apocaplayer", BepInDependency.DependencyFlags.SoftDependency)]   // (1.2.0) its ModAPI animates the gunmen
     public sealed class Plugin : BaseUnityPlugin
     {
-        public const string GUID = "com.denis.apocalypter.npcai", NAME = "NPCAI", VERSION = "1.1.3";
+        public const string GUID = "com.denis.apocalypter.npcai", NAME = "NPCAI", VERSION = "1.2.0";
         internal static ManualLogSource Log;
         internal static string Dir;
         internal static ConfigEntry<bool> ApocaplayerClips, VerboseLog;
         internal static ConfigEntry<bool> AimEnabled;
-        internal static ConfigEntry<float> AimTimeScale, FacingTolerance, EngagePercent, ReloadSeconds, SingleShotReload, ReloadVolume, ReloadSoundRange;
+        internal static ConfigEntry<float> AimTimeScale, FacingTolerance, EngagePercent, ReloadSeconds, SingleShotReload, ReloadVolume, ReloadSoundRange, RoundSeconds;
         internal static ConfigEntry<bool> Magazines; internal static ConfigEntry<string> MagazineTable;
         internal static ConfigEntry<bool> BrainEnabled, DropCheck, BrainLog, AimPose, ScaleWithActors;
         internal static ConfigEntry<float> TurnRate, CrouchChance, ReactionTime, FeelerLength, MeleeFeelerLength, FeelerAngle, AdvanceChance, AdvanceMin, AdvanceMax, StuckBackupSeconds, StuckMemorySeconds, MaxDistance;
@@ -80,7 +81,8 @@ namespace NPCAI
             SingleShotReload = H("NpcAim", "SingleShotReload", 1f, new ConfigDescription("Reload time of a gun with a magazine of 1-2 (pipe pistol, slam-fire shotgun, crossbow, the Rochesters): the reload clip is sped up to it, s.", new AcceptableValueRange<float>(0.3f, 5f)));
             ReloadVolume = H("NpcAim", "ReloadVolume", 1f, new ConfigDescription("Volume of a gunman's reload sounds (the clips the player's copy of the gun plays while reloading). 0 = silent.", new AcceptableValueRange<float>(0f, 1f)));
             ReloadSoundRange = H("NpcAim", "ReloadSoundRange", 35f, new ConfigDescription("How far a reload is heard, m (linear falloff from 2 m).", new AcceptableValueRange<float>(5f, 100f)));
-            ReloadSeconds = H("NpcAim", "ReloadSeconds", 2.5f, new ConfigDescription("Reload time without a reload clip, s.", new AcceptableValueRange<float>(0.5f, 10f)));
+            RoundSeconds = H("NpcAim", "RoundSeconds", 0.6f, new ConfigDescription("Guns loaded one round at a time (revolver, shotguns, bolt rifle, double barrel - as the player's copy of the gun): seconds per round; the reload clip's round part plays once per round.", new AcceptableValueRange<float>(0.2f, 3f)));
+                        ReloadSeconds = H("NpcAim", "ReloadSeconds", 2.5f, new ConfigDescription("Reload time without a reload clip, s.", new AcceptableValueRange<float>(0.5f, 10f)));
             ReactionTime = H("Brain", "ReactionTime", 100f, new ConfigDescription(
                 "How quickly NPCs think and react, as % of the default: every wait of the brain (looks, backing out of a stuck, resting, keeping a way around an obstacle, rechecks while holding) is scaled by this. 50 = twice as quick, 500 = five times slower.",
                 new AcceptableValueRange<float>(1f, 500f)));
@@ -103,7 +105,7 @@ namespace NPCAI
             StuckBackupSeconds = H("Brain", "StuckBackupSeconds", 0.8f, new ConfigDescription("A stuck NPC backs up this long, s, before trying another way.", new AcceptableValueRange<float>(0.1f, 5f)));
             StuckMemorySeconds = H("Brain", "StuckMemorySeconds", 5f, new ConfigDescription("How long the heading it got stuck on is avoided, s.", new AcceptableValueRange<float>(0f, 60f)));
             StuckGiveUpCount = H("Brain", "StuckGiveUpCount", 3, new ConfigDescription("Stucks within 10 s after which the NPC stands still for a second (facing you) before trying again.", new AcceptableValueRange<int>(1, 20)));
-            ApocaplayerClips = H("Brain", "ApocaplayerClips", true, "With Apocaplayer installed: gunmen play its clips (rifle / pistol idle, run, strafes, crouch, fire) with the gun in the right hand at its weapon poses. false = the game's own clips (also a quick A/B for performance).");
+            ApocaplayerClips = H("Brain", "ApocaplayerClips", true, "With Apocaplayer 2.2.0+ installed: gunmen are animated by its ModAPI - the player's own clips and logic (8-way walk / run / sprint, crouch for rifles and pistols, aim and fire, reloads incl. one round at a time, pump / bolt after a burst, turns in place, hops) with the gun in the right hand at the player's weapon poses. false = the game's own clips (also a quick A/B for performance).");
             StrafeAngle = H("Brain", "StrafeAngle", 50f, new ConfigDescription("(with Apocaplayer's clips) A chasing gunman whose way round something is within this many degrees of the line to his target keeps facing the target and strafes along it instead of turning his body. 0 = always turn.", new AcceptableValueRange<float>(0f, 90f)));
             CoverBelow = H("Brain", "CoverBelow", 50f, new ConfigDescription("A fighting human whose health drops below this % runs to cover (a cover object of the camp, or a spot its map shows breaks your line of sight, within CoverRange) and fights from there for CoverMin..CoverMax s. 0 = off.", new AcceptableValueRange<float>(0f, 100f)));
             CoverRange = H("Brain", "CoverRange", 25f, new ConfigDescription("How far a cover spot may be, m.", new AcceptableValueRange<float>(3f, 100f)));
@@ -190,7 +192,6 @@ namespace NPCAI
                 h.Patch(AccessTools.Method(typeof(SendEvent), "OnEnter"), prefix: new HarmonyMethod(typeof(Brain), nameof(Brain.BeforeSendEvent)));
                 h.Patch(AccessTools.Method(typeof(AddForce), "DoAddForce"), prefix: new HarmonyMethod(typeof(Brain), nameof(Brain.BeforeAddForce)));
                 h.Patch(AccessTools.Method(typeof(ActivateGameObject), "OnEnter"), postfix: new HarmonyMethod(typeof(Brain), nameof(Brain.AfterActivate)));
-                h.Patch(AccessTools.Method(typeof(AnimatorPlay), "OnEnter"), prefix: new HarmonyMethod(typeof(Brain), nameof(Brain.BeforeAnimatorPlay)));
                 var multi = AccessTools.TypeByName("HutongGames.PlayMaker.Actions.ActivateGameObjects");
                 if (multi != null) h.Patch(AccessTools.Method(multi, "OnEnter"), postfix: new HarmonyMethod(typeof(Brain), nameof(Brain.AfterActivate)));
             }
