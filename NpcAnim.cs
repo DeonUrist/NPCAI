@@ -25,7 +25,7 @@ namespace NPCAI
     // (crouch idle) and "Fire" + slot (FireWalk, FireStrafeLeft, FireRun, FireCrouchStrafeLeft ...).
     //
     // A rifleman aiming is the player aiming down sights: the RifleFire clip held on its first frame (Body: hold && !shooting -> speed 0),
-    // pose "Fire"; moving while aiming plays the Fire set's clips; pistols are already up in PistolIdle (no aim set). The pose for a clip is
+    // pose "Fire"; moving while aiming plays the Fire set's clips; pistols aim the same way with PistolFire (1.1.3: PistolIdle is lowered). The pose for a clip is
     // GunPose.Effective(weapon, pose, default) when Apocaplayer exposes it (the player's live table incl. his weapon-poses.txt), else the
     // same lookup in the parsed table (own entry, else the weapon's Idle).
     //
@@ -209,7 +209,7 @@ namespace NPCAI
             }
             if (slot == "CrouchIdle" && fireSet)
             {
-                foreach (var c in new[] { "Crouch" + setPre, setPre + "CrouchIdle", basePre + "CrouchFire" }) if (Clip(c) != null) return c;   // CrouchRifleFire
+                foreach (var c in new[] { basePre + "CrouchFire", "Crouch" + setPre, setPre + "CrouchIdle" }) if (Clip(c) != null) return c;   // RifleCrouchFire (old name CrouchRifleFire)
                 return null;
             }
             if (Clip(setPre + slot) != null) return setPre + slot;

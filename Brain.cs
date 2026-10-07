@@ -1030,7 +1030,7 @@ namespace NPCAI
         // (1.1.1) With Apocaplayer's clips the body is driven from here every frame, like the player's third-person body (Apocaplayer Body.cs):
         // the situation picks a slot (Idle, Run, WalkBack, StrafeLeft / Right, the Crouch ones) and whether the raised Fire set is used -
         // a rifleman facing his target is aiming (the player's aim-down-sights: RifleFire held on its first frame, moving with the Fire set's
-        // clips), the burst (attack_ranged) is the Fire set playing for both kinds, a pistol is already up in PistolIdle. The gun sits in the
+        // clips), the burst (attack_ranged) is the Fire set playing for both kinds, pistols aim with PistolFire (1.1.3). The gun sits in the
         // right hand at that clip's entry of the weapon-pose table. Off the brain (idle at camp, searching, walking to a ghost, the melee
         // swing, death) the rig stops and the game's own clips show with the gun in its own hand.
         private static void Drive(Npc n, string state, float now, float dt)
@@ -1078,8 +1078,9 @@ namespace NPCAI
             else if (n.LocoStrafe) slot = (n.Crouched ? "CrouchStrafe" : n.LocoRun ? "RunStrafe" : "Strafe") + (local.x < 0f ? "Left" : "Right");
             else if (local.z < 0f) slot = n.Crouched ? "CrouchWalkBack" : "WalkBack";
             else slot = n.Crouched ? "CrouchWalk" : n.LocoRun ? "Run" : "Walk";
-            // the Fire set: the burst, and a rifleman's aim whenever he is squared up to his target (not while running after him)
-            bool fire = burst || (rifle && facing);
+            // the Fire set: the burst, and the aim whenever he is squared up to his target (not while running after him). (1.1.3) Pistols too:
+            // Apocaplayer 1.8's PistolIdle is a lowered gun, the aim is PistolFire held on its first frame (as RifleFire for riflemen)
+            bool fire = burst || facing;
             string pose = fire ? NpcAnim.FirePose(slot) : slot;
             bool still = slot == "Idle" || slot == "CrouchIdle";
             float reloadClip = n.Reloading ? NpcAnim.ClipLength(prefix + "Reload") : 0f;     // (1.1.2) the reload: upper body over the legs' slot, sped up to the reload time
@@ -1262,6 +1263,9 @@ namespace NPCAI
                 // (1.1.2) only with Apocaplayer's crouch clips (the gun rig): the clip and a shorter capsule (about 0.45 m lower) so bullets
                 // aimed at the empty air above him miss. The old kneel built by bending the leg bones is gone.
                 if (n.Rig == null || n.Rig.Legs) return;
+                // (1.1.3) no pistol crouch clips any more (Apocaplayer 1.8: Rifle crouch legs + the pistol's upper body, which needs its UpperRig):
+                // pistolmen don't kneel
+                if (n.WeaponKey != null && NpcAnim.Prefix(n.WeaponKey) == "Pistol") return;
                 if (n.Capsule == null) { n.Capsule = n.Owner.GetComponent<CapsuleCollider>(); if (n.Capsule != null) { n.CapHeight = n.Capsule.height; n.CapCenter = n.Capsule.center; } }
                 n.Crouched = true; n.Drop = 0.45f;
                 if (n.Capsule != null && n.CapHeight > 0f)

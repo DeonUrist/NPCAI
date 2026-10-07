@@ -15,7 +15,7 @@ namespace NPCAI
     [BepInDependency("com.denis.apocalypter.gunplay", BepInDependency.DependencyFlags.SoftDependency)]
     public sealed class Plugin : BaseUnityPlugin
     {
-        public const string GUID = "com.denis.apocalypter.npcai", NAME = "NPCAI", VERSION = "1.1.2";
+        public const string GUID = "com.denis.apocalypter.npcai", NAME = "NPCAI", VERSION = "1.1.3";
         internal static ManualLogSource Log;
         internal static string Dir;
         internal static ConfigEntry<bool> ApocaplayerClips, VerboseLog;
