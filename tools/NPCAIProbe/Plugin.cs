@@ -19,13 +19,15 @@ namespace NPCAIProbe
     //   prefabs\*.txt    a full FSM dump (every action with its fields) + sensors/animator of the first instance of each NPC prefab
     //   health.log       NPCAI's internal state every 30 s (collection sizes -> leaks; agents holding dead ghosts, etc.)
     //   perf.log         (0.1.6) frame time and each NPCAI subsystem's time every 5 s, rig count, Nav status
+    //   melee.log        (0.1.7) every animal / melee NPC near the camera: NPCAI mode vs the game's FSM states vs the attack ray / collider geometry vs the player
+    //   ground.log       (0.1.8) the ground under the player and every Scorpion_Small: collider, terrain texture layers and weights (what is "sand"?); prefabs\Burrower_Effect.txt = the sand worm's puff
     //   anim.log         (0.1.6) every gunman near the camera: NPCAI's rig state vs the game's FSM / Animator state vs the hands' children
     // Files are rewritten every 30 s and on quit. Nothing in the game is changed: all hooks only observe.
     [BepInPlugin(GUID, NAME, VERSION)]
     [BepInDependency("com.denis.apocalypter.npcai", BepInDependency.DependencyFlags.SoftDependency)]
     public sealed partial class Plugin : BaseUnityPlugin
     {
-        public const string GUID = "com.denis.apocalypter.npcaiprobe", NAME = "NPCAI Probe", VERSION = "0.1.6";
+        public const string GUID = "com.denis.apocalypter.npcaiprobe", NAME = "NPCAI Probe", VERSION = "0.1.8";
         internal static ManualLogSource Log;
         internal static ConfigEntry<bool> Enabled, TraceTransitions;
         internal static ConfigEntry<float> WriteSeconds;
@@ -80,6 +82,8 @@ namespace NPCAIProbe
             float now = Time.unscaledTime;
             try { Checks.Pump(now); } catch (Exception e) { Plugin.Log.LogError("Probe checks: " + e); }
             AnimTrace.Pump(now);
+            MeleeTrace.Pump(now);
+            GroundTrace.Pump(now);
             Perf.TryPatch(Plugin.HarmonyInstance);
             Perf.Frame(now);
             if (now >= _nextGlobal) { _nextGlobal = now + 15f; try { Checks.Global(); } catch (Exception e) { Plugin.Log.LogError("Probe global checks: " + e); } }
@@ -91,7 +95,7 @@ namespace NPCAIProbe
             }
         }
 
-        private void OnApplicationQuit() { if (Plugin.Enabled.Value) { Plugin.WriteAll(); AnimTrace.Flush(); } }
+        private void OnApplicationQuit() { if (Plugin.Enabled.Value) { Plugin.WriteAll(); AnimTrace.Flush(); MeleeTrace.Flush(); } }
     }
 
     public sealed partial class Plugin

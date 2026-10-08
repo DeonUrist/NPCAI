@@ -1436,6 +1436,54 @@ namespace NPCAI
             return s != null && s.Near != null && c >= 0 && s.Near[c];
         }
 
+        // ---------- (1.7.2) for Nests (read-only) ----------
+        // Floor points of root's map: walkable cells (room for a body), with roofedOnly only cells under a roof (a cave's inside, not the
+        // ground around its mouth or the rock between its inner and outer walls), all in the one connected area that has the most such
+        // cells. Up to max points, spread evenly over them. known = root is a mapped structure; baked = its map is ready.
+        private static int[] _compCount = new int[0];
+        internal static int FloorCells(Transform root, bool roofedOnly, List<Vector3> into, int max, out bool known, out bool baked)
+        {
+            known = false; baked = false; into.Clear();
+            Structure s = null;
+            foreach (var x in _structures) if (x.Root == root) { s = x; break; }
+            if (s == null) return 0;
+            known = true;
+            if (!s.Baked || s.FloorY == null) return 0;
+            baked = true;
+            int n = s.W * s.H;
+            int big = -1;
+            if (s.Comp != null && s.CompSize != null && s.CompSize.Length > 0)
+            {
+                if (_compCount.Length < s.CompSize.Length) _compCount = new int[s.CompSize.Length];
+                System.Array.Clear(_compCount, 0, s.CompSize.Length);
+                for (int i = 0; i < n; i++)
+                {
+                    if (float.IsNaN(s.FloorY[i]) || (roofedOnly && (s.Open == null || s.Open[i]))) continue;
+                    int c = s.Comp[i]; if (c >= 0 && c < s.CompSize.Length) _compCount[c]++;
+                }
+                int bs = 0; for (int c = 0; c < s.CompSize.Length; c++) if (_compCount[c] > bs) { bs = _compCount[c]; big = c; }
+            }
+            int eligible = 0;
+            for (int i = 0; i < n; i++) if (Eligible(s, i, roofedOnly, big)) eligible++;
+            if (eligible == 0) return 0;
+            int stride = Mathf.Max(1, eligible / Mathf.Max(1, max)), k = 0;
+            for (int i = 0; i < n && into.Count < max; i++)
+            {
+                if (!Eligible(s, i, roofedOnly, big)) continue;
+                if (k++ % stride != 0) continue;
+                into.Add(CellCenter(s, i % s.W, i / s.W, s.FloorY[i]));
+            }
+            return into.Count;
+        }
+
+        private static bool Eligible(Structure s, int i, bool roofedOnly, int big)
+        {
+            if (float.IsNaN(s.FloorY[i])) return false;
+            if (roofedOnly && (s.Open == null || s.Open[i])) return false;
+            if (big >= 0 && s.Comp != null && s.Comp[i] != big) return false;
+            return true;
+        }
+
         // ---------- for Idle (read-only) ----------
         // the root of the structure whose footprint contains p (any bake state), or null
         internal static Transform StructureRootAt(Vector3 p)

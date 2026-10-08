@@ -62,6 +62,8 @@ namespace NPCAI
             public GameObject Owner; public Transform T; public Collider Col; public Transform Head;
             public PlayMakerFSM Detection, Attack; public FsmGameObject DetectedVar;
             public string Tag; public HashSet<string> Hostile; public bool Human;
+            public bool Travel;           // (1.4.0) a hunter travelling underground (Burrow): its senses pause, nobody can see it
+            public float AmbushDist; public int Cone; public bool Burrowed;      // (1.3.0) vision group (0 human, 1 insect, 2 beast, 3 brute, 4 boss, 5 burrower); a burrowed creature sees all around
             public HashSet<string> BaseHostile; public PlayMakerFSM PlayerIsEnemy;   // the prefab's own enemies, and its faction-relation FSM (Coyotes)
             public State State; public GameObject Target; public Ghost Ghost; public Src GhostPrio;
             public float SeenFor, UnseenFor, SearchUntil, NextLook, Stagger, LastLog, InvestigateUntil, InvestigateSince; public Vector3 LastSeen;
@@ -97,6 +99,8 @@ namespace NPCAI
         private static Transform _ghostRoot;
         private const int Blockers = (1 << 0) | (1 << 8) | (1 << 9) | (1 << 11) | (1 << 14);   // Default, Car, Item, Door, Ground (the game's bullet obstruction set)
 
+        internal static GameObject PlayerObj { get { return _player; } }
+        internal static bool PlayerInCar { get { return PlayerCar() != null; } }       // (1.5.0) Pounce: no leaping at a car   // (1.4.0) Burrow: "behind the player" is behind the camera
         internal static bool On { get { return Plugin.SensesEnabled != null && Plugin.SensesEnabled.Value; } }
 
         public static void OnSceneLoaded()
@@ -159,7 +163,7 @@ namespace NPCAI
             {
                 var a = kv.Value;
                 if (a.Owner == null || a.T.parent != null) continue;       // seated in a car (Apocapatrol): not ours
-                if (now < a.NextLook) continue;
+                if (a.Travel || now < a.NextLook) continue;                 // (1.4.0) underground: keeps its target, sees nothing
                 float interval = Mathf.Max(0.05f, Plugin.LookInterval.Value);
                 a.NextLook = now + interval + a.Stagger;
                 try { Look(a, interval, now); }
@@ -183,7 +187,7 @@ namespace NPCAI
             if (a.State == State.Investigate && a.Ghost != null)
             {
                 Vector3 to = a.Ghost.Pos - a.T.position; to.y = 0f;
-                if (to.magnitude <= Mathf.Max(0.5f, Plugin.ArriveDistance.Value)) Arrived(a, now);
+                if (to.magnitude <= Brain.ArriveFor(a.Owner)) Arrived(a, now);
                 // no searching on the way: only a ghost nobody has refreshed for GhostTimeout seconds (since it was given to this NPC or last
                 // moved/renewed) lets the NPC settle for searching where it got to
                 else if (now >= Mathf.Max(a.InvestigateSince, a.Ghost.Moved) + Mathf.Max(5f, Plugin.GhostTimeout.Value))
@@ -228,7 +232,10 @@ namespace NPCAI
                     float d = Mathf.Sqrt(bestD), range = Mathf.Max(16f, Plugin.SightRange.Value);
                     float need = Mathf.Lerp(Mathf.Max(0f, Plugin.NoticeSeconds.Value), Mathf.Max(Plugin.NoticeSeconds.Value, Plugin.NoticeFar.Value), Mathf.Clamp01((d - 15f) / (range - 15f)));
                     need *= 2f - LightLevel();
-                    if (a.SeenFor >= need) Engage(a, best);
+                    // (1.3.2) an ambusher lying in wait (a burrowed scorpion) watches you come and only engages inside its ambush distance
+                    bool holding = false;
+                    if (a.AmbushDist > 0f) { Vector3 fl = best.transform.position - a.T.position; fl.y = 0f; holding = fl.sqrMagnitude > a.AmbushDist * a.AmbushDist; }
+                    if (a.SeenFor >= need && !holding) Engage(a, best);
                 }
             }
             else
@@ -276,8 +283,19 @@ namespace NPCAI
             float d = flat.magnitude;
             float range = isPlayer && FlashlightOn() ? Plugin.SightRange.Value : SightRange();
             if (a.InStorm || targetInStorm) range *= Storm.SightFactor;     // sand in the air between them
+            // (1.3.3) a burrowed creature (only its tail shows) is noticed by other NPCs only from close by
+            // (1.4.0) looked up only while any NPC is burrowed or travelling (no cost otherwise); a travelling one is not seen at all
+            if (!isPlayer && Burrow.Hidden > 0)
+            {
+                Agent tb;
+                if (_agents.TryGetValue(target.GetInstanceID(), out tb))
+                {
+                    if (tb.Travel) return false;
+                    if (tb.Burrowed) range = Mathf.Min(range, Plugin.BurrowSeenFrom.Value);
+                }
+            }
             if (d > range) return false;
-            if (Vector3.Angle(a.T.forward, flat) > Mathf.Clamp(Plugin.SightCone.Value, 10f, 360f) * 0.5f) return false;
+            if (Vector3.Angle(a.T.forward, flat) > Mathf.Clamp(ConeOf(a), 10f, 360f) * 0.5f) return false;
             Transform troot = target.transform.root;
             Vector3 head, body;
             Points(target, isPlayer, out head, out body);
@@ -296,10 +314,52 @@ namespace NPCAI
             return false;
         }
 
+        // (1.2.1) the eye / head point sits `want` m below the top of the collider (15 cm for a human), but never lower than a quarter of the
+        // body height: a 14 cm scorpion's "eye" was at its feet (top - 15 cm), grass and bumps blocked every sight line and it lost the player
+        // 1 m in front of it. Creatures get the same distance from the top, kept between the top and the bottom of their height.
+        private static float TopOffset(float height, float want) { return Mathf.Min(want, Mathf.Max(0f, height) * 0.25f); }
+
+        // (1.3.0) the arc of vision: humans and zombies [Detection] SightCone (Apocasetter); insects, beasts, brutes, bosses, burrowers have their own
+        internal static float ConeOf(Agent a)
+        {
+            if (a.Burrowed) return 360f;
+            switch (a.Cone)
+            {
+                case 1: return Plugin.SightConeInsects.Value;
+                case 2: return Plugin.SightConeBeasts.Value;
+                case 3: return Plugin.SightConeBrutes.Value;
+                case 4: return Plugin.SightConeBosses.Value;
+                case 5: return Plugin.SightConeBurrowers.Value;
+                default: return Plugin.SightCone.Value;
+            }
+        }
+
+        private static readonly Dictionary<string, string[]> _words = new Dictionary<string, string[]>();
+        private static bool NameIn(string prefab, string list)
+        {
+            if (string.IsNullOrEmpty(list)) return false;
+            string[] w;
+            if (!_words.TryGetValue(list, out w)) { w = list.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries); for (int i = 0; i < w.Length; i++) w[i] = w[i].Trim(); _words[list] = w; }
+            foreach (var x in w) if (x.Length > 0 && prefab.IndexOf(x, StringComparison.OrdinalIgnoreCase) >= 0) return true;
+            return false;
+        }
+
+        // boss (BossUI FSM) > burrower > brute > insect > beast > the human setting
+        private static int ConeGroupOf(GameObject owner)
+        {
+            foreach (var f in owner.GetComponents<PlayMakerFSM>()) if (f != null && f.FsmName == "BossUI") return 4;
+            string p = PrefabOf(owner);
+            if (NameIn(p, Plugin.ConeBurrowers.Value)) return 5;
+            if (NameIn(p, Plugin.ConeBrutes.Value)) return 3;
+            if (NameIn(p, Plugin.ConeInsects.Value)) return 1;
+            if (NameIn(p, Plugin.ConeBeasts.Value)) return 2;
+            return 0;
+        }
+
         private static Vector3 Eye(Agent a)
         {
             if (a.Head != null) return a.Head.position;
-            if (a.Col != null) { var b = a.Col.bounds; return new Vector3(b.center.x, b.max.y - 0.15f, b.center.z); }
+            if (a.Col != null) { var b = a.Col.bounds; return new Vector3(b.center.x, b.max.y - TopOffset(b.size.y, 0.15f), b.center.z); }
             return a.T.position + Vector3.up * 1.5f;
         }
 
@@ -314,7 +374,7 @@ namespace NPCAI
             Agent b;
             if (_agents.TryGetValue(target.GetInstanceID(), out b))
             {
-                head = b.Head != null ? b.Head.position : (b.Col != null ? new Vector3(b.Col.bounds.center.x, b.Col.bounds.max.y - 0.1f, b.Col.bounds.center.z) : target.transform.position + Vector3.up * 1.5f);
+                head = b.Head != null ? b.Head.position : (b.Col != null ? new Vector3(b.Col.bounds.center.x, b.Col.bounds.max.y - TopOffset(b.Col.bounds.size.y, 0.1f), b.Col.bounds.center.z) : target.transform.position + Vector3.up * 1.5f);
                 body = b.Col != null ? b.Col.bounds.center : target.transform.position + Vector3.up * 0.8f;
                 return;
             }
@@ -416,6 +476,9 @@ namespace NPCAI
             return null;
         }
 
+        // (1.7.3) Webs: the player's flashlight while it is on, else null
+        internal static Transform Flashlight { get { return FlashlightOn() ? _flashlight : null; } }
+
         private static bool FlashlightOn()
         {
             if (_flashlight == null)
@@ -436,6 +499,17 @@ namespace NPCAI
             a.State = State.Combat; a.Target = target; a.UnseenFor = 0f; a.Pursuits = 0; a.Pursue = null; a.Heard.RemoveWhere(x => x < 0);
             a.NextShout = 0f;       // a fresh sighting: the next shout comes at once
             Log(a, "sees " + Name(target) + " at " + Vector3.Distance(a.T.position, target.transform.position).ToString("0") + " m");
+        }
+
+        // (1.7.0) Nests: a web was touched - the nest's spiders know where the target is and go for it (they chase / search as usual from here)
+        internal static bool Alert(GameObject owner, GameObject target)
+        {
+            var a = Get(owner);
+            if (a == null || target == null || !On) return false;
+            a.AmbushDist = 0f;
+            Engage(a, target);
+            a.LastSeen = target.transform.position; a.LastSeenVel = Vector3.zero; a.UnseenFor = 0f;
+            return true;
         }
 
         private static void LoseTarget(Agent a, float now)
@@ -554,7 +628,7 @@ namespace NPCAI
         // check a shout about the player; the player now shoots elsewhere: that is where the player is). Never while it sees its target.
         private static bool Assign(Agent a, Ghost g, Src prio, float now)
         {
-            if (g == null || a.State == State.Combat || a.State == State.Hide || g.Retired) return false;
+            if (g == null || a.State == State.Combat || a.State == State.Hide || g.Retired || a.AmbushDist > 0f) return false;      // (1.3.2) an ambusher in wait ignores sounds
             float doneAt;
             if (a.Done.TryGetValue(g.Id, out doneAt) && g.Moved <= doneAt + 0.01f) return false;   // been there, nothing new about it
             if (a.Ghost == g)
@@ -1055,6 +1129,7 @@ namespace NPCAI
             if (!On || victim == null || attacker == null) return;
             var a = Get(victim.transform.root.gameObject);
             if (a == null) return;
+            a.AmbushDist = 0f;      // (1.3.2) a hit ends the ambush: it comes up and fights
             Brain.Hit(a.Owner);
             if (a.State == State.Combat || a.State == State.Hide || a.Blown) return;
             float now = Time.time;
@@ -1410,6 +1485,7 @@ namespace NPCAI
             foreach (var f in owner.GetComponents<PlayMakerFSM>()) if (f != null && f.FsmName == "PlayerIsEnemy") { a.PlayerIsEnemy = f; break; }
             Relation(a, false);
             a.Human = IsHuman(a.Tag);
+            a.Cone = ConeGroupOf(owner);
             a.Tracker = IsTracker(PrefabOf(owner));
             foreach (var t in owner.GetComponentsInChildren<Transform>(true))
             {
@@ -1427,6 +1503,11 @@ namespace NPCAI
             Sensors(a, false);
             a.Stagger = (_created++ % 10) * 0.012f;
             a.NextLook = Time.time + a.Stagger;
+            Burrow.Register(a);
+            Pounce.Register(a);
+            Nests.Register(a);
+            Ambush.Register(a);
+            DogBite.Register(a);
             if (Plugin.SensesLog.Value) Plugin.Log.LogInfo("Senses: " + owner.name + " (" + a.Tag + (a.Human ? ", human" : "") + ") hunts " + string.Join("/", new List<string>(a.Hostile).ToArray()) + (a.Head != null ? ", eyes at the head" : ""));
             return a;
         }

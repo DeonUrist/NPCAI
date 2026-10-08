@@ -46,7 +46,19 @@ namespace NPCAIProbe
             sb.AppendLine();
             sb.AppendLine("== COLLIDERS");
             foreach (var col in go.GetComponentsInChildren<Collider>(true))
-                sb.AppendLine("   " + Plugin.PathOf(col.transform) + " " + col.GetType().Name + " layer " + col.gameObject.layer + (col.isTrigger ? " trigger" : "") + (col.enabled ? "" : " (disabled)"));
+                sb.AppendLine("   " + Plugin.PathOf(col.transform) + " " + col.GetType().Name + " layer " + col.gameObject.layer + (col.isTrigger ? " trigger" : "") + (col.enabled ? "" : " (disabled)") + " bounds size " + col.bounds.size.ToString("0.00") + " centre-from-pivot " + (col.bounds.center - go.transform.position).ToString("0.00") + (col is CapsuleCollider ? " r " + ((CapsuleCollider)col).radius.ToString("0.00") + " h " + ((CapsuleCollider)col).height.ToString("0.00") + " dir " + ((CapsuleCollider)col).direction : ""));
+            sb.AppendLine();
+            sb.AppendLine("== HIERARCHY");
+            foreach (var t in go.GetComponentsInChildren<Transform>(true))
+                sb.AppendLine("   " + Plugin.PathOf(t) + " local " + t.localPosition.ToString("0.000") + " scale " + t.localScale.ToString("0.00") + (t.gameObject.activeSelf ? "" : " (inactive)") + " [" + string.Join(",", t.GetComponents<Component>().Where(x => x != null && !(x is Transform)).Select(x => x.GetType().Name).ToArray()) + "]");
+            foreach (var an in go.GetComponentsInChildren<Animator>(true)) sb.AppendLine("   Animator on " + Plugin.PathOf(an.transform) + " applyRootMotion " + an.applyRootMotion + " cullingMode " + an.cullingMode);
+            sb.AppendLine();
+            sb.AppendLine("== BODY");
+            var rbd = go.GetComponent<Rigidbody>();
+            if (rbd != null) sb.AppendLine("   Rigidbody mass " + rbd.mass + " gravity " + rbd.useGravity + " kinematic " + rbd.isKinematic + " drag " + rbd.drag + " constraints " + rbd.constraints + " interpolation " + rbd.interpolation);
+            sb.AppendLine("   scale " + go.transform.lossyScale.ToString("0.00"));
+            foreach (var t in go.GetComponentsInChildren<Transform>(true))
+                if (t.name.StartsWith("AttackRaycast") || t.name.StartsWith("raycast_")) sb.AppendLine("   " + Plugin.PathOf(t) + " local " + go.transform.InverseTransformPoint(t.position).ToString("0.00") + " fwd(local) " + go.transform.InverseTransformDirection(t.forward).ToString("0.00"));
             string name = new string(prefab.Select(ch => char.IsLetterOrDigit(ch) || ch == '_' || ch == '-' ? ch : '_').ToArray());
             File.WriteAllText(Path.Combine(Path.Combine(Plugin.OutDir, "prefabs"), name + ".txt"), sb.ToString());
         }

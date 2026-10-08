@@ -89,6 +89,9 @@ namespace NPCAI
             public Vector3 CoverPos; public float CoverUntil, CoverSince, NextCoverCheck, CoverCooldownUntil; public bool CoverArrived, CoverFromHide;
             public FsmGameObject HideVar;            // the Attack FSM's "Hide" variable (its FindClosest result)
             public FsmFloat HpVar; public float HpMax;   // the Health FSM's Health, and the most it was seen at
+            public bool Travel; public float RunZ;
+            public float Boost = 1f, BoostUntil;
+            public bool Halted;                            // (1.8.0) DogBite: in reach of its target - stands (and DogBite turns it)          // (1.7.0) a nest alarm: runs this many times faster until then       // (1.4.0) a hunter under the ground (Burrow): paused; the fastest pedal the game gave it (its run speed)
         }
 
         private static readonly Dictionary<int, Npc> _npcs = new Dictionary<int, Npc>();
@@ -106,7 +109,7 @@ namespace NPCAI
         private static readonly float[] _scores = new float[32];
         private static readonly float[] _blocks = new float[32];
 
-        public static void OnSceneLoaded() { foreach (var kv in _npcs) if (kv.Value.Body != null) ApBody.Detach(kv.Value.Body); _npcs.Clear(); _ignored.Clear(); _active = 0; ReloadSounds.Clear(); }
+        public static void OnSceneLoaded() { foreach (var kv in _npcs) if (kv.Value.Body != null) ApBody.Detach(kv.Value.Body); _npcs.Clear(); _ignored.Clear(); _arrive.Clear(); _active = 0; ReloadSounds.Clear(); }
 
         internal static bool On { get { return Plugin.BrainEnabled != null && Plugin.BrainEnabled.Value; } }
         // [Brain] ReactionTime %: every wait of the brain (think interval, back-up, rest, side lock, no-progress, memory, LOS tolerance,
@@ -152,6 +155,7 @@ namespace NPCAI
                     if (n.Mode != Mode.Off) SetMode(n, Mode.Off, "brain off");
                     continue;
                 }
+                if (n.Travel) continue;                                       // (1.4.0) diving / travelling underground (Burrow): nothing to steer
                 if (n.Crouched && n.T.parent != null) Crouch(n, false);     // seated by Apocapatrol after all: stand up
                 if (now < n.MakeWayUntil && n.Rb != null && n.T.parent == null && n.Mode != Mode.Off)   // a friend needs past: a short step aside
                 {
@@ -310,7 +314,7 @@ namespace NPCAI
             if (n.ToGhost)
             {
                 // a ghost is a place, not a target: go there (melee style, around things), then look around
-                if (d <= Mathf.Max(0.5f, Plugin.ArriveDistance.Value)) { Senses.ArrivedAt(n.Owner); n.NextLookTurn = 0f; SetMode(n, Mode.Search, "at the ghost"); return; }
+                if (d <= ArriveFor(n.Owner)) { Senses.ArrivedAt(n.Owner); n.NextLookTurn = 0f; SetMode(n, Mode.Search, "at the ghost"); return; }
                 if (n.Mode == Mode.Hold || n.Mode == Mode.Advance) SetMode(n, Mode.Chase, "ghost");
             }
             else if (n.Ranged)
@@ -522,10 +526,40 @@ namespace NPCAI
         // (1.4.7) Blocked: over BlockedSeconds the body covered less than BlockedRatio of the distance it was driven (running in place against
         // something, grinding along a wall) -> the same answer as a stuck: hop, or a step back and another way (on a map route the blocked
         // heading is skipped for BlockedMemory s; 3 times in 8 s -> full feelers for 3 s). Never keeps pushing.
+        // (1.2.1) how close to a remembered spot counts as being there: [Senses] ArriveDistance for people, but a creature (no humanoid body)
+        // that bites with a short AttackRaycast (a small scorpion: 0.3 m) must come to half its reach, else it stops 1.5 m short of the
+        // player's exact position, "searches" there and never bites
+        private static readonly Dictionary<int, float> _arrive = new Dictionary<int, float>();
+        internal static float ArriveFor(GameObject owner)
+        {
+            float cfg = Mathf.Max(0.5f, Plugin.ArriveDistance.Value);
+            if (owner == null) return cfg;
+            int id = owner.GetInstanceID(); float v;
+            if (_arrive.TryGetValue(id, out v)) return v;
+            v = cfg;
+            try
+            {
+                var an = owner.GetComponentInChildren<Animator>(true);
+                bool human = an != null && an.avatar != null && an.avatar.isHuman;
+                if (!human)
+                {
+                    var r = owner.transform.Find("AttackRaycast");
+                    var s = r != null ? r.GetComponent<Micosmo.SensorToolkit.RaySensor>() : null;
+                    if (s != null && s.Length > 0.01f) v = Mathf.Clamp(s.Length * 0.5f, 0.1f, cfg);
+                }
+            }
+            catch (Exception) { }
+            if (_arrive.Count > 400) _arrive.Clear();
+            _arrive[id] = v;
+            return v;
+        }
+
         private static bool Blocked(Npc n, float now)
         {
             float dt = now - n.BlkLastThink; n.BlkLastThink = now;
             bool moving = n.Mode == Mode.Chase || n.Mode == Mode.Advance || (n.Mode == Mode.Cover && !n.CoverArrived);
+            // (1.2.1) a swing (the Attack FSM's attack state) stops the body by itself: standing there is not being blocked, no step back
+            if (moving) { string ast = AttackState(n); if (ast != null && !ChaseState(ast)) moving = false; }
             if (!moving || dt > 1f || Senses.Blown(n.Owner) || n.Rb == null) { BlkReset(n, now); return false; }
             n.BlkDriven += n.CmdSpeed * dt;
             if (now - n.BlkSince < Mathf.Max(0.2f, Plugin.BlockedSeconds.Value)) return false;
@@ -1317,7 +1351,7 @@ namespace NPCAI
         {
             float now = Time.time;
             if (n.Mode == Mode.Hold || n.Mode == Mode.Rest || n.Mode == Mode.Search || n.Mode == Mode.Walk || n.Mode == Mode.BackUp || n.Mode == Mode.Off) return;   // standing still (or Idle's walk): the Unstuck FSM's "not moving" is no stuck
-            if (Senses.Blown(n.Owner)) return;          // pushed by a tornado: not stuck
+            if (n.Travel || n.Halted || Senses.Blown(n.Owner)) return;          // pushed by a tornado / under the ground: not stuck
             if (now - n.FriendBumpsSince > 6f) { n.FriendBumpsSince = now; n.FriendBumps = 0; }
             if (FriendInTheWay(n) && ++n.FriendBumps <= 3)   // bumped into another NPC: pass it, keep the map (3 times in 6 s at most: a wall next to a friend is still a wall)
             {
@@ -1436,6 +1470,38 @@ namespace NPCAI
             var n = Get(owner);
             if (n != null) n.FaceTargetUntil = Time.time + seconds;
         }
+
+        // (1.4.0) Burrow: a hunter dives (held still, no thinking) / is up again (the stuck and progress judgements start over)
+        internal static bool SetTravel(GameObject owner, bool on)
+        {
+            var n = Get(owner);
+            if (n == null) return false;
+            n.Travel = on; n.CmdSpeed = 0f;
+            float now = Time.time;
+            if (on) { if (n.Rb != null && !n.Rb.isKinematic) { Vector3 v = n.Rb.velocity; v.x = 0f; v.z = 0f; n.Rb.velocity = v; } }
+            else { BlkReset(n, now); n.NoProgressSince = now; n.BestDist = float.MaxValue; n.HasWaypoint = false; n.MakeWayUntil = 0f; }
+            return true;
+        }
+
+        // (1.8.0) DogBite: a dog in reach of its target stands still (no running circles round it) / runs again
+        internal static void Halt(GameObject owner, bool on)
+        {
+            var n = Get(owner);
+            if (n == null) return;
+            n.Halted = on;
+            if (!on) { BlkReset(n, Time.time); n.NoProgressSince = Time.time; }
+        }
+
+        // (1.7.0) Nests: an alarmed spider runs `mult` times faster for `seconds`
+        internal static void Boost(GameObject owner, float mult, float seconds)
+        {
+            var n = Get(owner);
+            if (n == null) return;
+            n.Boost = Mathf.Clamp(mult, 0.1f, 5f); n.BoostUntil = Time.time + Mathf.Max(0f, seconds);
+        }
+
+        // (1.4.0) the run speed the game's Movement FSM gives this NPC (0 = not seen yet)
+        internal static float RunSpeed(GameObject owner) { var n = Get(owner); return n != null ? n.RunZ : 0f; }
 
         // ---------- NPC registry ----------
         private static Npc Get(GameObject owner)
@@ -1561,9 +1627,13 @@ namespace NPCAI
                 var fsm = __instance.Fsm;
                 if (fsm == null || fsm.Name != "Movement" || !On) return true;
                 var n = Of(fsm.GameObject);
-                if (n == null || n.Mode == Mode.Off) return true;
+                if (n == null) return true;
+                if (n.Halted && n.Rb != null && !n.Rb.isKinematic) { n.CmdSpeed = 0f; Vector3 hv = n.Rb.velocity; hv.x = 0f; hv.z = 0f; n.Rb.velocity = hv; return false; }   // (1.8.0) a dog biting: stands
+                if (n.Travel) { n.CmdSpeed = 0f; return false; }            // (1.4.0) under the ground (Burrow) / pouncing (Pounce): NPCAI moves it, even with the brain off
+                if (n.Mode == Mode.Off) return true;
                 if (n.Mode == Mode.Walk) { n.CmdSpeed = 0f; return false; }      // (1.6.0) Idle drives the body: the game's pedal (run or stop) is skipped
                 float z = __instance.z != null && !__instance.z.IsNone ? __instance.z.Value : (__instance.vector != null && !__instance.vector.IsNone ? __instance.vector.Value.z : 0f);
+                if (z > n.RunZ) n.RunZ = z;    // (1.4.0) its run speed: how long a run would take (Burrow's travel time)
                 if (z <= 0f) return true;      // the Idle / attack states' "stop": vanilla
                 if (n.Rb == null) return true;
                 float speed = n.Mode == Mode.BackUp ? -Mathf.Min(z, 2.5f) : (n.Mode == Mode.Hold || n.Mode == Mode.Rest || n.Mode == Mode.Search || (n.Mode == Mode.Cover && n.CoverArrived)) ? 0f : z * n.SpeedScale;
@@ -1575,6 +1645,7 @@ namespace NPCAI
                     else if (n.StrafeDev == 0f) speed *= TurnSpeedFactor(Mathf.Abs(Mathf.DeltaAngle(n.T.eulerAngles.y, n.Heading)));
                 }
                 if (n.Body != null && n.SpeedCap > 0f) speed = Mathf.Clamp(speed, -n.SpeedCap, n.SpeedCap);   // (1.1.1) no faster than the clip can carry the feet
+                if (n.BoostUntil > 0f && speed > 0f) { if (Time.time < n.BoostUntil) speed *= n.Boost; else n.BoostUntil = 0f; }   // (1.7.0) a nest alarm
                 n.CmdSpeed = Mathf.Max(0f, speed);
                 // (1.1.1) strafing round a small detour: the legs go along the heading while the body faces the target
                 Vector3 fwd = n.StrafeDev != 0f && n.HasHeading ? Quaternion.Euler(0f, n.Heading, 0f) * Vector3.forward : n.T.forward;

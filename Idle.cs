@@ -379,7 +379,7 @@ namespace NPCAI
         {
             float left = Flat(pos - c.Goal);
             bool inv = c.Leg == Leg.Investigate;
-            float arrive = c.Leg == Leg.Home ? 1.5f : c.Leg == Leg.SearchBack ? 1.2f : inv ? Mathf.Max(0.5f, Plugin.ArriveDistance.Value) : 0.8f;
+            float arrive = c.Leg == Leg.Home ? 1.5f : c.Leg == Leg.SearchBack ? 1.2f : inv ? Brain.ArriveFor(c.A.Owner) : 0.8f;
             if (left <= arrive && (inv || Mathf.Abs(pos.y - c.Goal.y) < 2.5f)) { Arrived(c, now); return; }   // a ghost: flat distance, as the brain judged it
             Vector3 next = c.Goal; float pathLeft = left;
             bool onMap = Nav.On && Nav.Next(c.A.Owner, pos, c.Goal, out next, out pathLeft);
