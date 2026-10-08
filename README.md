@@ -7,6 +7,15 @@ fight, steer around obstacles and follow camp/cave/building maps. Camp NPCs retu
 and patrol. Busy friends can pass through each other. NPC aim pacing and firing decisions
 respect weapon reach. Flying creatures and seated Apocapatrol crews keep game movement.
 
+## Version 1.9.3
+
+- **Lying quadrupeds keep the chest out of the ground**: while they lie down, rest or get up, the front half (chest, front legs, head) is tilted up at the waist until the shoulders stand as high over the hips as they do when the creature stands (measured per rig when it spawns); never lowered. `[Behaviour] DogLieFrontLift` (m, default 0) adds to or takes from that height. Two ground rays per lying creature within 60 m of the camera.
+- **ApocaDustStorm support** (only when that mod is loaded): its dust storms dim NPC sight and hearing like the game's sandstorms (`[Senses] StormSight` / `StormHearing`) wherever the dust is thick enough to hurt the player. The game's own storms that ApocaDustStorm switches off (invisible, parked) no longer count as storms, and their tornado funnels no longer make nearby NPCs forget their target.
+
+## Version 1.9.2
+
+Lying dogs (and the other quadrupeds with the 1.9.0 animations) no longer push their front paws into the ground: while they lie down, rest or get up, a front paw below the ground is lifted by turning that leg at the shoulder just enough to put the paw on the ground (two short ground rays per lying creature within 60 m of the camera, after the animation each frame).
+
 ## Version 1.9.1
 
 **Quadrupeds fight properly** (dogs with the 1.9.0 animation bundle: Wild / Yard Hound, Grimhound, Nightwalker, Alpha Nightwalker).

@@ -1,4 +1,6 @@
+using System;
 using System.Collections.Generic;
+using System.Reflection;
 using UnityEngine;
 
 namespace NPCAI
@@ -20,15 +22,76 @@ namespace NPCAI
         private static PlayMakerArrayListProxy _list;
         private static float _nextFind;
 
-        internal static bool Any { get { return _storms.Count > 0; } }
+        internal static bool Any { get { return _storms.Count > 0 || _dust; } }
+
+        // (1.9.3) ApocaDustStorm (local.apocalypter.duststorm), only when that mod is loaded: its worldwide dust storms count as sandstorms
+        // (the same StormSight / StormHearing) wherever its dust is hazardous (intensity >= 0.35, where its player damage starts). It also
+        // switches the game's own storms off but leaves them in ArrayList_Sandstorms, parked and invisible: a storm whose SandPlayer FSM is
+        // disabled is skipped, funnels included (no "shoved by a tornado" from a storm that shoves nobody).
+        private const string DustGuid = "local.apocalypter.duststorm";
+        private const double DustHazard = 0.35;
+        private static bool _dustLooked, _dust;
+        private static Func<bool> _dustOn, _dustActive;
+        private static Func<double, double, double> _dustIntensity;
+        private static readonly Dictionary<int, PlayMakerFSM> _sandPlayer = new Dictionary<int, PlayMakerFSM>();
+
+        private static void LookForDust()
+        {
+            _dustLooked = true;
+            try
+            {
+                BepInEx.PluginInfo info;
+                if (!BepInEx.Bootstrap.Chainloader.PluginInfos.TryGetValue(DustGuid, out info) || ReferenceEquals(info.Instance, null)) return;
+                const BindingFlags any = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance;
+                Assembly asm = info.Instance.GetType().Assembly;
+                Type plugin = asm.GetType("ApocaDustStorm.Plugin"), runner = asm.GetType("ApocaDustStorm.StormRunner"), model = asm.GetType("ApocaDustStorm.StormModel");
+                PropertyInfo on = plugin != null ? plugin.GetProperty("Active", any) : null;
+                FieldInfo field = runner != null ? runner.GetField("Model", any) : null;
+                object m = field != null ? field.GetValue(null) : null;
+                PropertyInfo active = model != null ? model.GetProperty("Active", any) : null;
+                MethodInfo intensity = model != null ? model.GetMethod("Intensity", any, null, new[] { typeof(double), typeof(double) }, null) : null;
+                if (on == null || m == null || active == null || intensity == null || intensity.ReturnType != typeof(double))
+                { Plugin.Log.LogWarning("Storm: ApocaDustStorm " + info.Metadata.Version + " found, but not the expected StormRunner.Model; its storms are not sandstorms for NPCs"); return; }
+                _dustOn = (Func<bool>)Delegate.CreateDelegate(typeof(Func<bool>), on.GetGetMethod(true));
+                _dustActive = (Func<bool>)Delegate.CreateDelegate(typeof(Func<bool>), m, active.GetGetMethod(true));
+                _dustIntensity = (Func<double, double, double>)Delegate.CreateDelegate(typeof(Func<double, double, double>), m, intensity);
+                Plugin.Log.LogInfo("Storm: ApocaDustStorm " + info.Metadata.Version + " found: its dust storms dim NPC sight and hearing like the game's sandstorms");
+            }
+            catch (Exception e) { _dustOn = null; _dustActive = null; _dustIntensity = null; Plugin.Log.LogWarning("Storm: ApocaDustStorm bridge off: " + e.Message); }
+        }
+
+        private static void DustOff(Exception e)
+        {
+            _dust = false; _dustOn = null; _dustActive = null; _dustIntensity = null;
+            Plugin.Log.LogWarning("Storm: ApocaDustStorm bridge off: " + e.Message);
+        }
+
+        private static bool Parked(GameObject go)
+        {
+            PlayMakerFSM fsm;
+            int id = go.GetInstanceID();
+            if (!_sandPlayer.TryGetValue(id, out fsm))
+            {
+                fsm = null;
+                foreach (var f in go.GetComponents<PlayMakerFSM>()) if (f != null && f.FsmName == "SandPlayer") { fsm = f; break; }
+                _sandPlayer[id] = fsm;
+            }
+            return fsm != null && !fsm.enabled;
+        }
         internal static float SightFactor { get { return Mathf.Clamp01(Plugin.StormSight.Value / 100f); } }
         internal static float HearingFactor { get { return Mathf.Clamp01(Plugin.StormHearing.Value / 100f); } }
 
-        internal static void Reset() { _storms.Clear(); _funnels.Clear(); _funnelsOf.Clear(); _list = null; _nextFind = 0f; }
+        internal static void Reset() { _storms.Clear(); _funnels.Clear(); _funnelsOf.Clear(); _sandPlayer.Clear(); _list = null; _nextFind = 0f; _dust = false; }
 
         internal static void Refresh()
         {
             _storms.Clear(); _funnels.Clear();
+            if (!_dustLooked) LookForDust();
+            if (_dustIntensity != null)
+            {
+                try { _dust = _dustOn() && _dustActive(); }
+                catch (Exception e) { DustOff(e); }
+            }
             if (_list == null)
             {
                 if (Time.unscaledTime < _nextFind) return;
@@ -44,7 +107,7 @@ namespace NPCAI
             for (int i = 0; i < al.Count; i++)
             {
                 var go = al[i] as GameObject;
-                if (go != null && go.activeInHierarchy) _storms.Add(go.transform);
+                if (go != null && go.activeInHierarchy && (_dustIntensity == null || !Parked(go))) _storms.Add(go.transform);
             }
             foreach (var st in _storms)
             {
@@ -79,6 +142,11 @@ namespace NPCAI
 
         internal static bool In(Vector3 p)
         {
+            if (_dust)
+            {
+                try { if (_dustIntensity(p.x, p.z) >= DustHazard) return true; }
+                catch (Exception e) { DustOff(e); }
+            }
             if (_storms.Count == 0) return false;
             float r = Plugin.StormRadius.Value, r2 = r * r;
             for (int i = 0; i < _storms.Count; i++)

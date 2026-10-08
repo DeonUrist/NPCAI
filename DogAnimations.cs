@@ -31,11 +31,13 @@ namespace NPCAI
             public PlayMakerFSM DamageComponent;
             public readonly Dictionary<Wait, float> OriginalWaits = new Dictionary<Wait, float>();
             public GameObject BiteTarget; public Fsm DamageFsm;
+            public Transform[] LegTop, LegPaw;      // (1.9.2) the two front legs: shoulder bone and paw (deepest skinned bone)
+            public Transform[] HindTop; public Transform FrontRoot; public bool LevelLogged; public float ShoulderOverHip;   // (1.9.3) hind leg tops; the bone that carries the front half (chest, front legs, neck)
         }
         private static readonly Dictionary<int, Dog> Dogs = new Dictionary<int, Dog>();
         private static readonly Dictionary<string, Dictionary<string, AnimationClip>> Clips = new Dictionary<string, Dictionary<string, AnimationClip>>(StringComparer.OrdinalIgnoreCase);
         private static ConfigEntry<bool> enabled, resting, jumping;
-        private static ConfigEntry<float> idleMin, idleMax;
+        private static ConfigEntry<float> idleMin, idleMax, frontLift;
         private static AssetBundle bundle;
         private const int Solid = (1 << 0) | (1 << 8) | (1 << 9) | (1 << 11) | (1 << 14) | (1 << 16);
         private const int Floor = (1 << 0) | (1 << 8) | (1 << 11) | (1 << 14);
@@ -47,6 +49,7 @@ namespace NPCAI
             resting = config.Bind("Behaviour", "DogsLieDown", true, "Non-boss quadrupeds alternate standing and lying idle, spending a random 10-25 seconds in each pose. Threats interrupt rest through get-up.");
             idleMin = config.Bind("Behaviour", "DogIdlePoseMinSeconds", 10f, new ConfigDescription("Idle quadrupeds stand or lie at least this long before switching, s.", new AcceptableValueRange<float>(2f, 300f)));
             idleMax = config.Bind("Behaviour", "DogIdlePoseMaxSeconds", 25f, new ConfigDescription("... and at the most, s.", new AcceptableValueRange<float>(2f, 300f)));
+            frontLift = config.Bind("Behaviour", "DogLieFrontLift", 0f, new ConfigDescription("Lying quadrupeds: the front half (chest, front legs, head) is tilted up at the waist until the shoulders stand as high over the hips as they do standing. This adds to (or, negative, takes from) that height, m.", new AcceptableValueRange<float>(-0.15f, 0.3f)));
             jumping = config.Bind("Behaviour", "DogJumpAttack", false, "Optional short, collision-checked jumping bite. Native damage is applied only if the target remains within reach at contact.");
             string path = Path.Combine(Path.Combine(Plugin.Dir, "Models"), "npcai_dogs.bundle");
             if (!File.Exists(path)) { Plugin.Log.LogInfo("Dog animations: bundle absent; using procedural bite."); return; }
@@ -90,6 +93,7 @@ namespace NPCAI
             var rayObject = agent.T.Find("AttackRaycast");
             var ray = rayObject != null ? rayObject.GetComponent<Micosmo.SensorToolkit.RaySensor>() : null;
             if (ray != null && ray.Length > .1f) dog.Reach = ray.Length;
+            FrontLegs(dog);
             Dogs[id] = dog;
             if (Plugin.DogLog.Value) Plugin.Log.LogInfo("Dog animations: " + agent.Owner.name + " mapped " + bones.Length + " bones; " + clips.Count + " clips.");
         }
@@ -341,6 +345,129 @@ namespace NPCAI
             foreach (int id in dead) Dogs.Remove(id);
         }
 
+        // (1.9.2) front legs by name: a bone with "front" and the side in its name (leg_front_left_top0 / legFront_0Left), the shoulder
+        // being the one nearest the root, the paw its deepest descendant the skin uses
+        private static void FrontLegs(Dog d)
+        {
+            var skinned = new HashSet<Transform>(d.Bones);
+            var tops = new List<Transform>(); var paws = new List<Transform>();
+            foreach (string side in new[] { "left", "right" })
+            {
+                Transform top = null; int topDepth = int.MaxValue;
+                foreach (var b in d.Bones)
+                {
+                    string n = b.name.ToLowerInvariant();
+                    if (!n.Contains("front") || !n.Contains(side)) continue;
+                    int depth = 0; for (var t = b; t != null; t = t.parent) depth++;
+                    if (depth < topDepth) { topDepth = depth; top = b; }
+                }
+                if (top == null) continue;
+                Transform paw = null; int pawDepth = -1;
+                foreach (var t in top.GetComponentsInChildren<Transform>(true))
+                {
+                    if (!skinned.Contains(t) || t == top) continue;
+                    int depth = 0; for (var u = t; u != null && u != top; u = u.parent) depth++;
+                    if (depth > pawDepth) { pawDepth = depth; paw = t; }
+                }
+                if (paw != null) { tops.Add(top); paws.Add(paw); }
+            }
+            d.LegTop = tops.ToArray(); d.LegPaw = paws.ToArray();
+            // (1.9.3) hind leg tops (leg_hind_left_top0 / legRear_0Left), and the front half's root: the child, on the way up from a front
+            // shoulder, of the first bone that also carries a hind leg (hounds/nightwalkers body_top0, Grimhound Spine2)
+            var hind = new List<Transform>();
+            foreach (string side in new[] { "left", "right" })
+            {
+                Transform top = null; int topDepth = int.MaxValue;
+                foreach (var b in d.Bones)
+                {
+                    string n = b.name.ToLowerInvariant();
+                    if (!(n.Contains("hind") || n.Contains("rear")) || !n.Contains(side)) continue;
+                    int depth = 0; for (var t = b; t != null; t = t.parent) depth++;
+                    if (depth < topDepth) { topDepth = depth; top = b; }
+                }
+                if (top != null) hind.Add(top);
+            }
+            d.HindTop = hind.ToArray(); d.FrontRoot = null;
+            if (d.LegTop.Length == 0 || d.HindTop.Length == 0) return;
+            for (Transform child = d.LegTop[0], up = child.parent; up != null; child = up, up = up.parent)
+            {
+                bool carries = false;
+                foreach (var h in d.HindTop) if (h.IsChildOf(up)) { carries = true; break; }
+                if (!carries) continue;
+                if (child != d.LegTop[0] && !d.HindTop[0].IsChildOf(child)) d.FrontRoot = child;
+                break;
+            }
+            // the rig's own shoulder height over the hips, standing (the pose it has when it registers), in its own frame
+            if (d.FrontRoot != null) d.ShoulderOverHip = d.Agent.T.InverseTransformPoint(Mid(d.LegTop)).y - d.Agent.T.InverseTransformPoint(Mid(d.HindTop)).y;
+        }
+
+        private static Vector3 Mid(Transform[] ts)
+        {
+            Vector3 m = Vector3.zero; int n = 0;
+            foreach (var t in ts) if (t != null) { m += t.position; n++; }
+            return n > 0 ? m / n : Vector3.zero;
+        }
+
+        // (1.9.3) lying, getting down or up: the clips (made for another body) leave the hips above the ground and push the chest into it.
+        // The whole front half is turned up at its root until the shoulders stand over the hips as they do standing (+ DogLieFrontLift);
+        // never down. Faded in over the first 60 % of LieDown, out over the first 70 % of GetUp.
+        private static void LevelFront(Dog d)
+        {
+            if (d.FrontRoot == null) return;
+            float len0 = d.Clips[d.Playing].length;
+            float w = d.Pose == Pose.Rest ? 1f : d.Pose == Pose.LieDown ? Mathf.Clamp01(d.Time / Mathf.Max(.05f, len0 * .6f)) : 1f - Mathf.Clamp01(d.Time / Mathf.Max(.05f, len0 * .7f));
+            if (w <= 0f) return;
+            Vector3 s = Vector3.zero, h = Vector3.zero; int ns = 0, nh = 0;
+            foreach (var t in d.LegTop) if (t != null) { s += t.position; ns++; }
+            foreach (var t in d.HindTop) if (t != null) { h += t.position; nh++; }
+            if (ns == 0 || nh == 0) return;
+            s /= ns; h /= nh;
+            RaycastHit gs, gh;
+            if (!Physics.Raycast(s + Vector3.up * .8f, Vector3.down, out gs, 2.5f, Floor, QueryTriggerInteraction.Ignore)) return;
+            if (!Physics.Raycast(h + Vector3.up * .8f, Vector3.down, out gh, 2.5f, Floor, QueryTriggerInteraction.Ignore)) return;
+            float extra = frontLift != null ? frontLift.Value : 0f;
+            float lift = ((h.y - gh.point.y) + d.ShoulderOverHip - (s.y - gs.point.y) + extra) * w;
+            if (Plugin.DogLog.Value && d.Pose == Pose.Rest && !d.LevelLogged)
+            {
+                d.LevelLogged = true;
+                Plugin.Log.LogInfo("Dog animations: " + d.Agent.Owner.name + " lying: shoulders " + (s.y - gs.point.y).ToString("F3") + " m, hips " + (h.y - gh.point.y).ToString("F3") + " m above the ground (standing: shoulders " + d.ShoulderOverHip.ToString("F3") + " m over the hips); front raised " + lift.ToString("F3") + " m at " + d.FrontRoot.name);
+            }
+            if (d.Pose != Pose.Rest) d.LevelLogged = false;
+            if (lift <= .003f) return;
+            Vector3 pivot = d.FrontRoot.position, arm = s - pivot;
+            Vector3 flat = arm; flat.y = 0f; float len = flat.magnitude;
+            if (len < .05f) return;
+            float ang = Mathf.Min(30f, Mathf.Asin(Mathf.Clamp01(lift / len)) * Mathf.Rad2Deg);
+            Vector3 axis = d.Agent.T.right;
+            float up1 = (Quaternion.AngleAxis(ang, axis) * arm).y, up2 = (Quaternion.AngleAxis(-ang, axis) * arm).y;
+            d.FrontRoot.rotation = Quaternion.AngleAxis(up1 >= up2 ? ang : -ang, axis) * d.FrontRoot.rotation;
+        }
+
+        // (1.9.2) lying, getting down or up: a front paw that the clip puts into the ground (the clips were made on flat ground for
+        // another body) is lifted by turning its whole leg at the shoulder, just enough to bring the paw onto the ground
+        private static void PawsOnGround(Dog d)
+        {
+            if (d.LegTop == null || d.LegTop.Length == 0) return;
+            var cam = Camera.main;
+            if (cam != null && (cam.transform.position - d.Agent.T.position).sqrMagnitude > 60f * 60f) return;     // too far to see
+            Vector3 axis = d.Agent.T.right;
+            for (int i = 0; i < d.LegTop.Length; i++)
+            {
+                var top = d.LegTop[i]; var paw = d.LegPaw[i];
+                if (top == null || paw == null) continue;
+                RaycastHit g;
+                if (!Physics.Raycast(paw.position + Vector3.up * 0.6f, Vector3.down, out g, 1.5f, Floor, QueryTriggerInteraction.Ignore)) continue;
+                float sink = g.point.y + 0.035f - paw.position.y;          // the paw bone sits a few cm inside the paw
+                if (sink <= 0.003f) continue;
+                Vector3 arm = paw.position - top.position; float len = arm.magnitude;
+                if (len < 0.05f) continue;
+                float ang = Mathf.Min(35f, Mathf.Asin(Mathf.Clamp01(sink / len)) * Mathf.Rad2Deg * 1.1f);
+                // turn the way that raises the paw
+                float up1 = (Quaternion.AngleAxis(ang, axis) * arm).y, up2 = (Quaternion.AngleAxis(-ang, axis) * arm).y;
+                top.rotation = Quaternion.AngleAxis(up1 >= up2 ? ang : -ang, axis) * top.rotation;
+            }
+        }
+
         internal static void LateTick()
         {
             foreach (var d in Dogs.Values)
@@ -353,6 +480,7 @@ namespace NPCAI
                 clip.SampleAnimation(d.Animator.gameObject, time);
                 float blend = Mathf.Clamp01(d.Fade / .16f);
                 if (blend < 1f) for (int i = 0; i < d.Bones.Length; i++) if (d.Bones[i] != null) { d.Bones[i].localPosition = Vector3.Lerp(d.FadePosition[i], d.Bones[i].localPosition, blend); d.Bones[i].localRotation = Quaternion.Slerp(d.FadeRotation[i], d.Bones[i].localRotation, blend); }
+                if (d.Pose == Pose.LieDown || d.Pose == Pose.Rest || d.Pose == Pose.GetUp) { var cam = Camera.main; if (cam == null || (cam.transform.position - d.Agent.T.position).sqrMagnitude <= 60f * 60f) LevelFront(d); PawsOnGround(d); }
                 d.Applied = true;
             }
         }
