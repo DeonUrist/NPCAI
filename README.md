@@ -1,4 +1,6 @@
-# NPCAI
+# NPC Overhaul
+
+(formerly NPCAI - same GUID, DLL and folder, so existing installs and settings carry over.)
 
 Independent BepInEx 5 mod for Apocalypter, extracted from Apocaraider 1.7.0.
 NPC vision, faction awareness, gunshots, hit origins, shouts, engines, horns, thrown items,
@@ -8,6 +10,8 @@ and patrol. Busy friends can pass through each other. NPC aim pacing and firing 
 respect weapon reach. Flying creatures and seated Apocapatrol crews keep game movement.
 
 ## Version 1.9.4
+
+The mod is now called **NPC Overhaul** (shown so in Apocasetter and the BepInEx log). GUID `com.denis.apocalypter.npcai`, `NPCAI.dll`, the `NPCAI/` plugin folder and the config file stay the same.
 
 No more `[Behaviour]` settings: burrowing, dog bites and animations, ambush, spider nests and pouncing are always on, with the tuned values (dogs stand / lie 10-25 s, no extra chest lift, no jump attack). The old entries are removed from an existing config file at start.
 
