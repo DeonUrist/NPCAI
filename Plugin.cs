@@ -16,7 +16,7 @@ namespace NPCAI
     [BepInDependency("com.denis.apocalypter.apocaplayer", BepInDependency.DependencyFlags.SoftDependency)]   // (1.2.0) its ModAPI animates the gunmen
     public sealed class Plugin : BaseUnityPlugin
     {
-        public const string GUID = "com.denis.apocalypter.npcai", NAME = "NPCAI", VERSION = "1.9.3";
+        public const string GUID = "com.denis.apocalypter.npcai", NAME = "NPCAI", VERSION = "1.9.4";
         internal static ManualLogSource Log;
         internal static string Dir;
         internal static ConfigEntry<bool> ApocaplayerClips, VerboseLog;
@@ -85,7 +85,7 @@ namespace NPCAI
             ConeBrutes = H("Detection", "ConeBrutes", "Professor,Teacher,Juggernaut", "Prefab name parts of the brute group.");
             ConeBurrowers = H("Detection", "ConeBurrowers", "Burrower", "Prefab name parts of the burrower group.");
             // (1.3.0) burrowing
-            BurrowEnabled = Config.Bind("Behaviour", "Burrow", true, "Scorpions burrow into sand when nothing alerts them (and come up every 10-30 s), eyes above the surface. Big scorpions also hunt underground: they travel under the sand and come up behind their enemy.");
+            BurrowEnabled = H("Behaviour", "Burrow", true, "Scorpions burrow into sand when nothing alerts them (and come up every 10-30 s), eyes above the surface. Big scorpions also hunt underground: they travel under the sand and come up behind their enemy.");
             BurrowPrefabs = H("Burrow", "Prefabs", "Scorpion_Small", "Creatures that burrow (exact prefab names).");
             BurrowMin = H("Burrow", "MinSeconds", 10f, new ConfigDescription("Shortest time between burrowing and coming up, s.", new AcceptableValueRange<float>(1f, 600f)));
             BurrowMax = H("Burrow", "MaxSeconds", 30f, new ConfigDescription("Longest time between burrowing and coming up, s.", new AcceptableValueRange<float>(1f, 600f)));
@@ -104,16 +104,16 @@ namespace NPCAI
             BurrowFxRange = H("Burrow", "FxRange", 45f, new ConfigDescription("No puff or sound when the camera is farther than this, m.", new AcceptableValueRange<float>(5f, 300f)));
             BurrowLog = H("Burrow", "Log", false, "Log burrowing and the terrain layers found.");
             // (1.8.0) dogs stand, face and bite
-            DogBiteEnabled = Config.Bind("Behaviour", "DogBite", true, "Quadrupeds commit to dodgeable running bites and use faster bites at close range. Without the animation bundle, the original procedural bite is used.");
+            DogBiteEnabled = H("Behaviour", "DogBite", true, "Quadrupeds commit to dodgeable running bites and use faster bites at close range. Without the animation bundle, the original procedural bite is used.");
             DogPrefabs = H("Dogs", "Prefabs", "Wild Hound,Yard Hound,Grimhound,Nightwalker,Alpha_Nightwalker", "Creatures handled as dogs (exact prefab names).");
             DogLog = H("Dogs", "Log", false, "Log each dog's reach and the head / neck bones found.");
             // (1.7.3) scorpions and spiders lie in wait
-            AmbushEnabled = Config.Bind("Behaviour", "Ambush", true, "Scorpions and spiders are ambush predators: they attack only when you (or another creature) come within 3-5 m, or when they are shot, or a nest's web is touched.");
+            AmbushEnabled = H("Behaviour", "Ambush", true, "Scorpions and spiders are ambush predators: they attack only when you (or another creature) come within 3-5 m, or when they are shot, or a nest's web is touched.");
             AmbushPrefabs = H("Ambush", "Prefabs", "Scorpion_Small,Scorpion_Big,Spider_Small,Spider_Big", "Creatures that lie in wait (exact prefab names).");
             AmbushMin = H("Ambush", "MinDistance", 3f, new ConfigDescription("They let a target come this close at the least before attacking, m (chosen at random each time they settle).", new AcceptableValueRange<float>(0.5f, 50f)));
             AmbushMax = H("Ambush", "MaxDistance", 5f, new ConfigDescription("... and at the most, m.", new AcceptableValueRange<float>(0.5f, 50f)));
             // (1.7.0) spider nests
-            NestsEnabled = Config.Bind("Behaviour", "SpiderNests", true, "Caves, wrecks and camps with spiders become spider nests: webs across their openings and on the ground, big spiders sitting in the webs. Touch a web and the whole nest comes at you.");
+            NestsEnabled = H("Behaviour", "SpiderNests", true, "Caves, wrecks and camps with spiders become spider nests: webs across their openings and on the ground, big spiders sitting in the webs. Touch a web and the whole nest comes at you.");
             NestPrefabs = H("Nests", "Prefabs", "Spider_Small,Spider_Big", "Creatures that make a place a nest and answer its alarm (exact prefab names).");
             NestSitters = H("Nests", "Sitters", "Spider_Big", "Creatures that sit in the hanging webs, one per web.");
             NestBuildRange = H("Nests", "BuildRange", 520f, new ConfigDescription("A nest is built when you are this close, m (the game spawns its spiders at 500 m).", new AcceptableValueRange<float>(50f, 2000f)));
@@ -136,7 +136,7 @@ namespace NPCAI
             WebTestMax = H("Webs", "TestMax", 24, new ConfigDescription("TEST: at most this many test webs; the oldest goes.", new AcceptableValueRange<int>(1, 200)));
             WebTestLifetime = H("Webs", "TestLifetime", 900f, new ConfigDescription("TEST: a test web disappears after this long, s (0 = never).", new AcceptableValueRange<float>(0f, 36000f)));
             // (1.5.0) small spiders pounce
-            PounceEnabled = Config.Bind("Behaviour", "Pounce", true, "Small spiders zigzag in when they get close to you over open ground, leap at you from 5-6 m, bite and run off before trying again.");
+            PounceEnabled = H("Behaviour", "Pounce", true, "Small spiders zigzag in when they get close to you over open ground, leap at you from 5-6 m, bite and run off before trying again.");
             PouncePrefabs = H("Pounce", "Prefabs", "Spider_Small", "Creatures that pounce (exact prefab names).");
             PounceZigMin = H("Pounce", "ZigzagFromMin", 8f, new ConfigDescription("It starts zigzagging this close at the least, m (chosen at random per try).", new AcceptableValueRange<float>(1f, 30f)));
             PounceZigMax = H("Pounce", "ZigzagFromMax", 11f, new ConfigDescription("... and at the most, m.", new AcceptableValueRange<float>(1f, 20f)));
@@ -330,11 +330,30 @@ namespace NPCAI
             vanilla.Patch(AccessTools.Method(typeof(Raycast), "OnEnter"), prefix: new HarmonyMethod(typeof(VanillaEvents), nameof(VanillaEvents.BeforePlayerShot)));
             vanilla.Patch(AccessTools.Method(typeof(SetFsmFloat), "OnEnter"), postfix: new HarmonyMethod(typeof(VanillaEvents), nameof(VanillaEvents.AfterDamage)));
             vanilla.Patch(AccessTools.Method(typeof(SetFsmFloat), "OnEnter"), postfix: new HarmonyMethod(typeof(DogBite), nameof(DogBite.AfterSetFsmFloat)));
-            DogAnimations.Initialize(Config);
+            DogAnimations.Initialize(_hidden);       // (1.9.4) fixed at the tuned values: no [Behaviour] settings any more
+            DropBehaviourSection();
             SceneManager.sceneLoaded += SceneLoaded;
             EnsureRunner();
             Log.LogInfo(NAME + " " + VERSION + " loaded");
         }
+        // (1.9.4) the [Behaviour] section is gone from the config: its entries, still in an existing file, are dropped and the file saved
+        private void DropBehaviourSection()
+        {
+            try
+            {
+                var prop = typeof(ConfigFile).GetProperty("OrphanedEntries", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public);
+                var orphans = prop != null ? prop.GetValue(Config, null) as System.Collections.Generic.Dictionary<ConfigDefinition, string> : null;
+                if (orphans == null) return;
+                var drop = new System.Collections.Generic.List<ConfigDefinition>();
+                foreach (var k in orphans.Keys) if (k.Section == "Behaviour") drop.Add(k);
+                if (drop.Count == 0) return;
+                foreach (var k in drop) orphans.Remove(k);
+                Config.Save();
+                Log.LogInfo("Config: " + drop.Count + " old [Behaviour] setting(s) removed (fixed at their tuned values now)");
+            }
+            catch (Exception e) { Log.LogWarning("Config: old [Behaviour] settings not removed: " + e.Message); }
+        }
+
         private void SceneLoaded(Scene scene, LoadSceneMode mode)
         { EnsureRunner(); Aim.OnSceneLoaded(); WeaponRanges.OnSceneLoaded(); Brain.OnSceneLoaded(); Senses.OnSceneLoaded(); Nav.OnSceneLoaded(); Idle.OnSceneLoaded(); Passthrough.OnSceneLoaded(); Burrow.OnSceneLoaded(); Pounce.OnSceneLoaded(); Webs.OnSceneLoaded(); Nests.OnSceneLoaded(); Ambush.OnSceneLoaded(); DogBite.OnSceneLoaded(); }
         private static void EnsureRunner()
