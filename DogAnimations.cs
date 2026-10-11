@@ -14,13 +14,17 @@ namespace NPCAI
     // Native FSMs retain sensing, damage amounts and their post-hit cooldown.
     internal static class DogAnimations
     {
-        private enum Pose { Locomotion, LieDown, Rest, GetUp, Bite, RunningBite, JumpAttack }
+        private enum Pose { Locomotion, LieDown, Rest, GetUp, Bite, RunningBite, JumpAttack, SitDown, Sitting }
         private sealed class Dog
         {
             public Senses.Agent Agent; public Animator Animator; public Rigidbody Body;
+            public DogCompanionCompat.Driver Companion;
             public Dictionary<string, AnimationClip> Clips;
             public Transform[] Bones; public Vector3[] NativePosition, FadePosition;
             public Quaternion[] NativeRotation, FadeRotation;
+            public Vector3[] DisplayPosition; public Quaternion[] DisplayRotation; public bool HasDisplay;
+            public Transform[] SupportPaws; public Transform SupportMarker; public Vector3 AnimatorPosition; public bool Aligned;
+            public float SoleOffset, FadeSoleOffset;
             public Behaviour[] Ik; public bool[] IkEnabled;
             public AnimatorCullingMode Culling;
             public Pose Pose; public string Playing; public float Time, Fade, NextBite;
@@ -75,18 +79,25 @@ namespace NPCAI
         }
 
         internal static void Register(Senses.Agent agent)
+        { if (agent != null && agent.Owner != null) RegisterRig(agent, Senses.PrefabOf(agent.Owner).Replace(' ', '_'), null); }
+
+        internal static bool RegisterCompanion(Senses.Agent agent, DogCompanionCompat.Driver driver)
+        { RegisterRig(agent, "Wild_Hound", driver); return agent != null && agent.Owner != null && Dogs.ContainsKey(agent.Owner.GetInstanceID()); }
+
+        private static void RegisterRig(Senses.Agent agent, string prefab, DogCompanionCompat.Driver companion)
         {
             if (agent == null || agent.Owner == null) return;
             int id = agent.Owner.GetInstanceID(); if (Dogs.ContainsKey(id)) return;
             Dictionary<string, AnimationClip> clips;
-            string prefab = Senses.PrefabOf(agent.Owner).Replace(' ', '_');
             if (!Clips.TryGetValue(prefab, out clips) || new[] { "Idle", "Run", "LieDown", "LieIdle", "GetUp", "Bite" }.Any(n => !clips.ContainsKey(n))) return;
+            if (companion != null && new[] { "Walk", "MovingBite", "SitDown", "SitIdle" }.Any(n => !clips.ContainsKey(n))) return;
             var animator = agent.Owner.GetComponentInChildren<Animator>(true);
-            var body = agent.Owner.GetComponent<Rigidbody>(); if (animator == null || body == null) return;
+            var body = agent.Owner.GetComponent<Rigidbody>(); if (animator == null || (body == null && companion == null)) return;
             var bones = agent.Owner.GetComponentsInChildren<SkinnedMeshRenderer>(true).SelectMany(r => r.bones).Where(t => t != null && t != animator.transform).Distinct().ToArray();
             if (bones.Length < 10) return;
-            var dog = new Dog { Agent = agent, Animator = animator, Body = body, Clips = clips, Bones = bones,
+            var dog = new Dog { Agent = agent, Companion = companion, Animator = animator, Body = body, Clips = clips, Bones = bones,
                 NativePosition = new Vector3[bones.Length], NativeRotation = new Quaternion[bones.Length], FadePosition = new Vector3[bones.Length], FadeRotation = new Quaternion[bones.Length], Culling = animator.cullingMode,
+                DisplayPosition = companion != null ? new Vector3[bones.Length] : null, DisplayRotation = companion != null ? new Quaternion[bones.Length] : null,
                 Boss = prefab == "Alpha_Nightwalker" || agent.Owner.GetComponentsInChildren<PlayMakerFSM>(true).Any(f => f != null && f.FsmName == "BossUI") };
             dog.Ik = agent.Owner.GetComponentsInChildren<Behaviour>(true).Where(b => b != null && b.GetType().Name == "FastIKFabric").ToArray();
             dog.IkEnabled = dog.Ik.Select(b => b.enabled).ToArray();
@@ -94,6 +105,14 @@ namespace NPCAI
             var ray = rayObject != null ? rayObject.GetComponent<Micosmo.SensorToolkit.RaySensor>() : null;
             if (ray != null && ray.Length > .1f) dog.Reach = ray.Length;
             FrontLegs(dog);
+            if (companion != null)
+            {
+                dog.SupportPaws = bones.Where(t => t.name.EndsWith("_toe", StringComparison.OrdinalIgnoreCase)).ToArray();
+                var marker = animator.transform.Find("__NPCAI_PawSupport");
+                if (marker == null) { marker = new GameObject("__NPCAI_PawSupport").transform; marker.SetParent(animator.transform, false); }
+                dog.SupportMarker = marker;
+            }
+            if (companion != null) dog.NextBite = companion.NativeNextBite;
             Dogs[id] = dog;
             if (Plugin.DogLog.Value) Plugin.Log.LogInfo("Dog animations: " + agent.Owner.name + " mapped " + bones.Length + " bones; " + clips.Count + " clips.");
         }
@@ -103,6 +122,7 @@ namespace NPCAI
         private static bool Eligible(Dog d)
         {
             var a = d.Agent;
+            if (d.Companion != null) return On && d.Companion.Active && a != null && a.Owner != null && a.Owner.activeInHierarchy && d.Animator != null && d.Animator.enabled;
             return On && a != null && a.Owner != null && a.Owner.activeInHierarchy && a.T != null && a.T.parent == null && !a.Blown && (!a.Travel || d.Jumping || d.Dashing)
                 && d.Animator != null && d.Animator.enabled && d.Body != null && !d.Body.isKinematic && WithinRange(a);
         }
@@ -119,6 +139,8 @@ namespace NPCAI
         {
             if (!d.Applied) return;
             for (int i = 0; i < d.Bones.Length; i++) if (d.Bones[i] != null) { d.Bones[i].localPosition = d.NativePosition[i]; d.Bones[i].localRotation = d.NativeRotation[i]; }
+            if (d.Aligned && d.Animator != null) d.Animator.transform.localPosition = d.AnimatorPosition;
+            d.Aligned = false;
             d.Applied = false;
         }
         private static void Prepare(Dog d)
@@ -138,16 +160,22 @@ namespace NPCAI
         private static void ReleaseDash(Dog d)
         {
             if (!d.Dashing) return;
-            if (d.Body != null) { d.Body.drag = d.Drag; Vector3 v = d.Body.velocity; v.x = v.z = 0f; d.Body.velocity = v; }
-            if (d.Agent != null && d.Agent.Owner != null) { Brain.SetTravel(d.Agent.Owner, false); d.Agent.Travel = false; }
+            if (d.Companion != null) d.Companion.Halt(false);
+            else
+            {
+                if (d.Body != null) { d.Body.drag = d.Drag; Vector3 v = d.Body.velocity; v.x = v.z = 0f; d.Body.velocity = v; }
+                if (d.Agent != null && d.Agent.Owner != null) { Brain.SetTravel(d.Agent.Owner, false); d.Agent.Travel = false; }
+            }
             d.Dashing = false;
         }
         private static void Release(Dog d)
         {
             Restore(d); ReleaseJump(d); ReleaseDash(d);
-            if (d.Held && d.Agent != null && d.Agent.Owner != null) Brain.Halt(d.Agent.Owner, false);
+            if (d.Held) Hold(d, false);
             d.Held = false; d.DamageFsm = null; d.BiteTarget = null; d.Pose = Pose.Locomotion; d.Playing = null;
             d.WasQuiet = false; d.NextIdleChange = 0f; d.RecoveryUntil = 0f;
+            d.HasDisplay = false;
+            d.SoleOffset = d.FadeSoleOffset = 0f;
             foreach (var wait in d.OriginalWaits) if (wait.Key.time != null) wait.Key.time.Value = wait.Value;
             d.OriginalWaits.Clear();
             if (!d.Prepared) return;
@@ -155,24 +183,45 @@ namespace NPCAI
             for (int i = 0; i < d.Ik.Length; i++) if (d.Ik[i] != null) d.Ik[i].enabled = d.IkEnabled[i];
             d.Prepared = false;
         }
-        internal static void OnSceneLoaded() { foreach (var dog in Dogs.Values) Release(dog); Dogs.Clear(); }
+        private static void Hold(Dog d, bool held)
+        { if (d.Companion != null) d.Companion.Halt(held); else if (d.Agent != null && d.Agent.Owner != null) Brain.Halt(d.Agent.Owner, held); }
+        private static float Speed(Dog d)
+        { return d.Companion != null ? d.Companion.Speed : new Vector2(d.Body.velocity.x, d.Body.velocity.z).magnitude; }
+        private static float RunSpeed(Dog d)
+        { return d.Companion != null ? d.Companion.RunSpeed : Brain.RunSpeed(d.Agent.Owner); }
+        private static Vector3 Origin(Dog d)
+        { return (d.Companion != null ? d.Companion.Feet : d.Agent.T.position) + Vector3.up * .25f; }
+        internal static void RestoreCompanion(GameObject owner)
+        { Dog d; if (owner != null && Dogs.TryGetValue(owner.GetInstanceID(), out d)) Restore(d); }
+        internal static bool CompanionDashing(GameObject owner)
+        { Dog d; return owner != null && Dogs.TryGetValue(owner.GetInstanceID(), out d) && d.Dashing; }
+        internal static void RemoveCompanion(GameObject owner)
+        { Dog d; if (owner != null && Dogs.TryGetValue(owner.GetInstanceID(), out d)) { Release(d); Dogs.Remove(owner.GetInstanceID()); } }
+        internal static void OnSceneLoaded() { foreach (var dog in Dogs.Values) Release(dog); Dogs.Clear(); DogCompanionCompat.OnSceneLoaded(); }
 
         private static void Switch(Dog d, Pose pose, string clip)
         {
-            for (int i = 0; i < d.Bones.Length; i++) if (d.Bones[i] != null) { d.FadePosition[i] = d.Bones[i].localPosition; d.FadeRotation[i] = d.Bones[i].localRotation; }
+            for (int i = 0; i < d.Bones.Length; i++) if (d.Bones[i] != null)
+            {
+                d.FadePosition[i] = d.Companion != null && d.HasDisplay ? d.DisplayPosition[i] : d.Bones[i].localPosition;
+                d.FadeRotation[i] = d.Companion != null && d.HasDisplay ? d.DisplayRotation[i] : d.Bones[i].localRotation;
+            }
             d.Pose = pose; d.Playing = clip; d.Time = 0f; d.Fade = 0f;
+            d.FadeSoleOffset = d.SoleOffset;
             d.AttackRate = 1f;
         }
         private static bool Grounded(Dog d)
         {
+            if (d.Companion != null) return Physics.Raycast(d.Companion.Feet + Vector3.up * .2f, Vector3.down, .4f, Floor, QueryTriggerInteraction.Ignore);
             var c = d.Agent.Col; if (c == null) return false;
             return Physics.Raycast(c.bounds.center, Vector3.down, c.bounds.extents.y + .18f, Floor, QueryTriggerInteraction.Ignore);
         }
         private static bool InReach(Dog d, GameObject target)
         {
             if (target == null || !target.activeInHierarchy || d.Agent.Target != target) return false;
+            if (d.Companion != null && !d.Companion.TargetAlive(target)) return false;
             var col = target.GetComponent<Collider>() ?? target.GetComponentInChildren<Collider>();
-            Vector3 origin = d.Agent.T.position + Vector3.up * .25f;
+            Vector3 origin = Origin(d);
             Vector3 point = col != null ? col.ClosestPoint(origin) : target.transform.position;
             Vector3 to = point - origin;
             if (to.magnitude > d.Reach + .2f || Mathf.Abs(to.y) > 1.2f) return false;
@@ -186,10 +235,11 @@ namespace NPCAI
         private static Vector3 TargetPoint(Dog d, GameObject target)
         {
             var col = target.GetComponent<Collider>() ?? target.GetComponentInChildren<Collider>();
-            return col != null ? col.ClosestPoint(d.Agent.T.position + Vector3.up * .25f) : target.transform.position;
+            return col != null ? col.ClosestPoint(Origin(d)) : target.transform.position;
         }
         private static bool DamageReady(Dog d)
         {
+            if (d.Companion != null) return !d.Companion.Riding && d.Companion.TargetAlive(d.Agent.Target);
             if (d.DamageComponent == null || !d.DamageComponent.enabled)
                 d.DamageComponent = d.Agent.Owner.GetComponents<PlayMakerFSM>().FirstOrDefault(f => f != null && f.enabled && f.FsmName == "Damage");
             return d.DamageComponent != null && d.DamageComponent.enabled && d.DamageComponent.Fsm != null && d.DamageComponent.Fsm.Initialized && d.DamageComponent.Fsm.ActiveStateName == "trigger";
@@ -200,13 +250,15 @@ namespace NPCAI
             Switch(d, running ? Pose.RunningBite : Pose.Bite, running ? "MovingBite" : "Bite");
             d.AttackRate = d.Clips[d.Playing].length / (running ? .70f : .48f);
             d.NextBite = Time.time + (running ? 1.02f : .58f) + UnityEngine.Random.Range(0f, .04f);
+            if (d.Companion != null) d.Companion.SetCooldown(d.NextBite);
             d.RecoveryUntil = Time.time + (running ? .90f : .56f);
             if (!running) return;
             Vector3 direction = TargetPoint(d, d.BiteTarget) - d.Agent.T.position; direction.y = 0f;
             d.DashDirection = direction.sqrMagnitude > .001f ? direction.normalized : d.Agent.T.forward;
-            d.DashSpeed = Mathf.Clamp(Mathf.Max(Brain.RunSpeed(d.Agent.Owner), new Vector2(d.Body.velocity.x, d.Body.velocity.z).magnitude), 5f, 7f);
+            d.DashSpeed = Mathf.Clamp(Mathf.Max(RunSpeed(d), Speed(d)), 5f, 7f);
             // Once committed, pursue the snapshot direction rather than the moving target.
-            if (d.Held) { d.Held = false; Brain.Halt(d.Agent.Owner, false); }
+            if (d.Held) { d.Held = false; Hold(d, false); }
+            if (d.Companion != null) { d.Dashing = true; return; }
             d.Drag = d.Body.drag; d.Body.drag = 0f; d.Dashing = true;
             Brain.SetTravel(d.Agent.Owner, true); d.Agent.Travel = true;
         }
@@ -216,15 +268,17 @@ namespace NPCAI
             if (d.Pose != Pose.Locomotion || a.State != Senses.State.Combat || a.Target == null || Time.time < d.NextBite || !DamageReady(d)) return;
             Vector3 to = TargetPoint(d, a.Target) - a.T.position; to.y = 0f;
             float distance = to.magnitude;
-            if (InReach(d, a.Target)) { StartAttack(d, d.DamageComponent.Fsm, false); return; }
-            float speed = Mathf.Clamp(Mathf.Max(Brain.RunSpeed(a.Owner), new Vector2(d.Body.velocity.x, d.Body.velocity.z).magnitude), 5f, 7f);
+            var damage = d.Companion != null ? null : d.DamageComponent.Fsm;
+            if (InReach(d, a.Target)) { StartAttack(d, damage, false); return; }
+            float speed = Mathf.Clamp(Mathf.Max(RunSpeed(d), Speed(d)), 5f, 7f);
             if (d.Clips.ContainsKey("MovingBite") && distance <= d.Reach + speed * .22f && Grounded(d) && (distance < .05f || Vector3.Dot(a.T.forward, to / distance) >= .55f))
-                StartAttack(d, d.DamageComponent.Fsm, true);
+                StartAttack(d, damage, true);
         }
         private static void DriveDash(Dog d, float dt)
         {
             float seconds = d.Time / Mathf.Max(.01f, d.AttackRate);
             float speed = seconds < .12f ? 2f : seconds < .48f ? d.DashSpeed : 2f;
+            if (d.Companion != null) { d.Companion.Dash(d.DashDirection, speed, dt, d.BiteTarget); return; }
             RaycastHit hit;
             bool blocked = d.Body.SweepTest(d.DashDirection, out hit, speed * Mathf.Max(dt, .016f) + .08f, QueryTriggerInteraction.Ignore);
             if (blocked && (IntendedTarget(hit.collider, d.BiteTarget) || hit.normal.y > .6f)) blocked = false;
@@ -274,75 +328,98 @@ namespace NPCAI
 
         internal static void Tick()
         {
-            float dt = Time.deltaTime;
             var dead = new List<int>();
             foreach (var pair in Dogs)
             {
                 var d = pair.Value;
-                // Transition blends start from the prior displayed pose before restoring the native baseline.
-                if (!Eligible(d)) { Release(d); if (d.Agent == null || d.Agent.Owner == null) dead.Add(pair.Key); continue; }
-                Prepare(d);
-                var a = d.Agent; Vector3 velocity = d.Body.velocity; float speed = new Vector2(velocity.x, velocity.z).magnitude;
-                bool quiet = resting.Value && !d.Boss && a.State == Senses.State.Idle && a.Target == null && a.Ghost == null && speed < .15f && Grounded(d);
-                if (quiet && !d.WasQuiet) d.NextIdleChange = Time.time + IdleSpan();
-                if (!quiet) d.NextIdleChange = 0f;
-                d.WasQuiet = quiet;
-                if (d.Pose == Pose.Locomotion)
-                {
-                    if (quiet && Time.time >= d.NextIdleChange) Switch(d, Pose.LieDown, "LieDown");
-                    else
-                    {
-                        string clip = speed > 3f ? "Run" : speed > .15f && d.Clips.ContainsKey("Walk") ? "Walk" : "Idle";
-                        if (clip != d.Playing) Switch(d, Pose.Locomotion, clip);
-                    }
-                    if (a.State == Senses.State.Combat && a.Target != null)
-                    {
-                        Vector3 to = TargetPoint(d, a.Target) - a.T.position; to.y = 0f;
-                        if (to.sqrMagnitude > .0025f && to.magnitude <= d.Reach + 2f)
-                            a.T.rotation = Quaternion.RotateTowards(a.T.rotation, Quaternion.LookRotation(to), 1080f * dt);
-                        TryAttack(d);
-                    }
-                }
-                else if ((d.Pose == Pose.Rest || d.Pose == Pose.LieDown) && !quiet) Switch(d, Pose.GetUp, "GetUp");
-                else if (d.Pose == Pose.Rest && quiet && Time.time >= d.NextIdleChange) Switch(d, Pose.GetUp, "GetUp");
-                d.Fade += dt;
-                float rate = d.Pose == Pose.Bite || d.Pose == Pose.RunningBite ? d.AttackRate : d.Playing == "Run" ? Mathf.Clamp(speed / Math.Max(2f, Brain.RunSpeed(a.Owner)), .35f, 2f) : 1f;
-                d.Time += dt * rate;
-                if (d.Dashing) DriveDash(d, dt);
-                if (d.Jumping && ((Time.time - d.JumpSince > .12f && d.Body.velocity.y <= 0f && Grounded(d)) || Time.time - d.JumpSince > 2f)) ReleaseJump(d);
-                if ((d.Pose == Pose.Bite || d.Pose == Pose.RunningBite || d.Pose == Pose.JumpAttack) && !d.HitSent && d.Time >= d.Clips[d.Playing].length * (d.Pose == Pose.Bite ? .38f : .45f))
-                {
-                    d.HitSent = true;
-                    if (InReach(d, d.BiteTarget) && d.DamageFsm != null && d.DamageFsm.ActiveStateName == "trigger")
-                    {
-                        d.Committing = true;
-                        try
-                        {
-                            var victim = d.DamageFsm.Variables.FindFsmGameObject("detectedObj");
-                            if (victim != null) victim.Value = d.BiteTarget;
-                            d.DamageFsm.Event("attack");
-                        }
-                        finally { d.Committing = false; }
-                    }
-                }
-                if (d.Time >= d.Clips[d.Playing].length)
-                {
-                    if (d.Pose == Pose.LieDown) { Switch(d, Pose.Rest, "LieIdle"); d.NextIdleChange = Time.time + IdleSpan(); }
-                    else if (d.Pose == Pose.GetUp || d.Pose == Pose.Bite || d.Pose == Pose.RunningBite || (d.Pose == Pose.JumpAttack && !d.Jumping))
-                    {
-                        ReleaseDash(d); d.DamageFsm = null; d.BiteTarget = null; Switch(d, Pose.Locomotion, "Idle");
-                        if (quiet) d.NextIdleChange = Time.time + IdleSpan();
-                    }
-                }
-                // Only hold melee position where a bite can actually reach. Outside it, continue chasing or commit to a running bite.
-                bool close = a.State == Senses.State.Combat && a.Target != null && InReach(d, a.Target);
-                bool held = !d.Dashing && (close || d.Pose != Pose.Locomotion || Time.time < d.RecoveryUntil);
-                if (held != d.Held) { d.Held = held; Brain.Halt(a.Owner, held); }
-                else if (held) Brain.Halt(a.Owner, true); // Brain may have registered after the rest/attack began.
-                if (held && !d.Jumping && !d.Dashing) d.Body.velocity = new Vector3(0f, d.Body.velocity.y, 0f);
-                Restore(d);
+                if (d.Agent == null || d.Agent.Owner == null) { Release(d); dead.Add(pair.Key); continue; }
+                if (d.Companion == null) TickDog(d, Time.deltaTime);
             }
             foreach (int id in dead) Dogs.Remove(id);
+        }
+        internal static void TickCompanion(GameObject owner)
+        { Dog d; if (owner != null && Dogs.TryGetValue(owner.GetInstanceID(), out d)) TickDog(d, Time.deltaTime); }
+        private static void TickDog(Dog d, float dt)
+        {
+            // Transition blends start from the prior displayed pose before restoring the native baseline.
+            if (!Eligible(d)) { Release(d); return; }
+            Prepare(d);
+            var a = d.Agent; float speed = Speed(d);
+            if (d.Companion != null && a.State == Senses.State.Combat && d.Playing != null && d.Playing.StartsWith("Sneak", StringComparison.Ordinal))
+            {
+                Restore(d); d.HasDisplay = false;
+                Switch(d, Pose.Locomotion, "Idle");
+            }
+            bool riding = d.Companion != null && d.Companion.Riding;
+            if (riding)
+            {
+                if (d.Pose != Pose.SitDown && d.Pose != Pose.Sitting) { ReleaseDash(d); d.BiteTarget = null; d.DamageFsm = null; Switch(d, Pose.SitDown, "SitDown"); }
+            }
+            else if (d.Pose == Pose.SitDown || d.Pose == Pose.Sitting) Switch(d, Pose.Locomotion, "Idle");
+            bool quiet = d.Companion == null && resting.Value && !d.Boss && a.State == Senses.State.Idle && a.Target == null && a.Ghost == null && speed < .15f && Grounded(d);
+            if (quiet && !d.WasQuiet) d.NextIdleChange = Time.time + IdleSpan();
+            if (!quiet) d.NextIdleChange = 0f;
+            d.WasQuiet = quiet;
+            if (d.Companion != null && d.BiteTarget != null && (a.Target != d.BiteTarget || !d.Companion.TargetAlive(d.BiteTarget)))
+            { ReleaseDash(d); d.BiteTarget = null; Switch(d, Pose.Locomotion, "Idle"); }
+            if (d.Pose == Pose.Locomotion)
+            {
+                if (quiet && Time.time >= d.NextIdleChange) Switch(d, Pose.LieDown, "LieDown");
+                else
+                {
+                    string clip = speed > 3f ? "Run" : speed > .15f && d.Clips.ContainsKey("Walk") ? "Walk" : "Idle";
+                    if (d.Companion != null && d.Companion.Sneaking && d.Clips.ContainsKey("SneakIdle") && d.Clips.ContainsKey("SneakWalk")) clip = speed > .15f ? "SneakWalk" : "SneakIdle";
+                    if (clip != d.Playing) Switch(d, Pose.Locomotion, clip);
+                }
+                if (a.State == Senses.State.Combat && a.Target != null)
+                {
+                    Vector3 to = TargetPoint(d, a.Target) - a.T.position; to.y = 0f;
+                    if (to.sqrMagnitude > .0025f && to.magnitude <= d.Reach + 2f)
+                        a.T.rotation = Quaternion.RotateTowards(a.T.rotation, Quaternion.LookRotation(to), 1080f * dt);
+                    TryAttack(d);
+                }
+            }
+            else if ((d.Pose == Pose.Rest || d.Pose == Pose.LieDown) && !quiet) Switch(d, Pose.GetUp, "GetUp");
+            else if (d.Pose == Pose.Rest && quiet && Time.time >= d.NextIdleChange) Switch(d, Pose.GetUp, "GetUp");
+            d.Fade += dt;
+            float rate = d.Pose == Pose.Bite || d.Pose == Pose.RunningBite ? d.AttackRate : d.Playing == "Run" ? Mathf.Clamp(speed / Math.Max(2f, RunSpeed(d)), .35f, 2f) : 1f;
+            if (d.Playing == "SneakWalk") rate = Mathf.Clamp(speed / 1.3f, .35f, 1.6f);
+            d.Time += dt * rate;
+            if (d.Dashing) DriveDash(d, dt);
+            if (d.Jumping && ((Time.time - d.JumpSince > .12f && d.Body.velocity.y <= 0f && Grounded(d)) || Time.time - d.JumpSince > 2f)) ReleaseJump(d);
+            if ((d.Pose == Pose.Bite || d.Pose == Pose.RunningBite || d.Pose == Pose.JumpAttack) && !d.HitSent && d.Time >= d.Clips[d.Playing].length * (d.Pose == Pose.Bite ? .38f : .45f))
+            {
+                d.HitSent = true;
+                if (InReach(d, d.BiteTarget) && d.Companion != null) d.Companion.Contact(d.BiteTarget);
+                else if (InReach(d, d.BiteTarget) && d.DamageFsm != null && d.DamageFsm.ActiveStateName == "trigger")
+                {
+                    d.Committing = true;
+                    try
+                    {
+                        var victim = d.DamageFsm.Variables.FindFsmGameObject("detectedObj");
+                        if (victim != null) victim.Value = d.BiteTarget;
+                        d.DamageFsm.Event("attack");
+                    }
+                    finally { d.Committing = false; }
+                }
+            }
+            if (d.Time >= d.Clips[d.Playing].length)
+            {
+                if (d.Pose == Pose.SitDown) Switch(d, Pose.Sitting, "SitIdle");
+                else if (d.Pose == Pose.LieDown) { Switch(d, Pose.Rest, "LieIdle"); d.NextIdleChange = Time.time + IdleSpan(); }
+                else if (d.Pose == Pose.GetUp || d.Pose == Pose.Bite || d.Pose == Pose.RunningBite || (d.Pose == Pose.JumpAttack && !d.Jumping))
+                {
+                    ReleaseDash(d); d.DamageFsm = null; d.BiteTarget = null; Switch(d, Pose.Locomotion, "Idle");
+                    if (quiet) d.NextIdleChange = Time.time + IdleSpan();
+                }
+            }
+            // Only hold melee position where a bite can actually reach. Outside it, continue chasing or commit to a running bite.
+            bool close = a.State == Senses.State.Combat && a.Target != null && InReach(d, a.Target);
+            bool held = !d.Dashing && (close || d.Pose != Pose.Locomotion || Time.time < d.RecoveryUntil);
+            if (held != d.Held) { d.Held = held; Hold(d, held); }
+            else if (held) Hold(d, true); // Brain may have registered after the rest/attack began.
+            if (d.Companion == null && held && !d.Jumping && !d.Dashing) d.Body.velocity = new Vector3(0f, d.Body.velocity.y, 0f);
+            Restore(d);
         }
 
         // (1.9.2) front legs by name: a bone with "front" and the side in its name (leg_front_left_top0 / legFront_0Left), the shoulder
@@ -469,20 +546,44 @@ namespace NPCAI
         }
 
         internal static void LateTick()
+        { foreach (var d in Dogs.Values) if (d.Companion == null) SampleDog(d); }
+        internal static void LateCompanion(GameObject owner)
+        { Dog d; if (owner != null && Dogs.TryGetValue(owner.GetInstanceID(), out d)) SampleDog(d); }
+        private static void SampleDog(Dog d)
         {
-            foreach (var d in Dogs.Values)
+            if (!Eligible(d) || string.IsNullOrEmpty(d.Playing)) return;
+            if (d.Dashing) d.Agent.T.rotation = Quaternion.LookRotation(d.DashDirection);
+            for (int i = 0; i < d.Bones.Length; i++) if (d.Bones[i] != null) { d.NativePosition[i] = d.Bones[i].localPosition; d.NativeRotation[i] = d.Bones[i].localRotation; }
+            var clip = d.Clips[d.Playing]; bool loop = d.Pose == Pose.Locomotion || d.Pose == Pose.Rest || d.Pose == Pose.Sitting;
+            float time = loop ? d.Time % clip.length : Mathf.Min(d.Time, clip.length);
+            clip.SampleAnimation(d.Animator.gameObject, time);
+            float blend = Mathf.Clamp01(d.Fade / .16f);
+            if (blend < 1f) for (int i = 0; i < d.Bones.Length; i++) if (d.Bones[i] != null) { d.Bones[i].localPosition = Vector3.Lerp(d.FadePosition[i], d.Bones[i].localPosition, blend); d.Bones[i].localRotation = Quaternion.Slerp(d.FadeRotation[i], d.Bones[i].localRotation, blend); }
+            if (d.Pose == Pose.LieDown || d.Pose == Pose.Rest || d.Pose == Pose.GetUp) { var cam = Camera.main; if (cam == null || (cam.transform.position - d.Agent.T.position).sqrMagnitude <= 60f * 60f) LevelFront(d); PawsOnGround(d); }
+            if (d.Companion != null) AlignCompanion(d);
+            if (d.Companion != null)
             {
-                if (!Eligible(d) || string.IsNullOrEmpty(d.Playing)) continue;
-                if (d.Dashing) d.Agent.T.rotation = Quaternion.LookRotation(d.DashDirection);
-                for (int i = 0; i < d.Bones.Length; i++) if (d.Bones[i] != null) { d.NativePosition[i] = d.Bones[i].localPosition; d.NativeRotation[i] = d.Bones[i].localRotation; }
-                var clip = d.Clips[d.Playing]; bool loop = d.Pose == Pose.Locomotion || d.Pose == Pose.Rest;
-                float time = loop ? d.Time % clip.length : Mathf.Min(d.Time, clip.length);
-                clip.SampleAnimation(d.Animator.gameObject, time);
-                float blend = Mathf.Clamp01(d.Fade / .16f);
-                if (blend < 1f) for (int i = 0; i < d.Bones.Length; i++) if (d.Bones[i] != null) { d.Bones[i].localPosition = Vector3.Lerp(d.FadePosition[i], d.Bones[i].localPosition, blend); d.Bones[i].localRotation = Quaternion.Slerp(d.FadeRotation[i], d.Bones[i].localRotation, blend); }
-                if (d.Pose == Pose.LieDown || d.Pose == Pose.Rest || d.Pose == Pose.GetUp) { var cam = Camera.main; if (cam == null || (cam.transform.position - d.Agent.T.position).sqrMagnitude <= 60f * 60f) LevelFront(d); PawsOnGround(d); }
-                d.Applied = true;
+                for (int i = 0; i < d.Bones.Length; i++) if (d.Bones[i] != null) { d.DisplayPosition[i] = d.Bones[i].localPosition; d.DisplayRotation[i] = d.Bones[i].localRotation; }
+                d.HasDisplay = true;
             }
+            d.Applied = true;
+        }
+
+        // The companion positions its pivot pawDepth above the support surface.
+        // Retargeted poses have another paw height. Correct only the visual Rig,
+        // in the dog's frame so the same placement works on a tilted car seat.
+        private static void AlignCompanion(Dog d)
+        {
+            if (d.SupportPaws == null || d.SupportPaws.Length == 0) return;
+            float lowest = float.MaxValue;
+            foreach (var paw in d.SupportPaws) if (paw != null) lowest = Mathf.Min(lowest, d.Agent.T.InverseTransformPoint(paw.position).y);
+            if (lowest == float.MaxValue) return;
+            if (!d.Aligned) d.AnimatorPosition = d.Animator.transform.localPosition;
+            float soleOffset = d.SupportMarker != null ? d.SupportMarker.localPosition.y : 0f;
+            soleOffset = Mathf.Lerp(d.FadeSoleOffset, soleOffset, Mathf.Clamp01(d.Fade / .16f));
+            d.SoleOffset = soleOffset;
+            d.Animator.transform.position += d.Agent.T.TransformVector(Vector3.up * (d.Companion.PawHeight - lowest - soleOffset));
+            d.Aligned = true;
         }
     }
 }

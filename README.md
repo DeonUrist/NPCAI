@@ -9,6 +9,43 @@ fight, steer around obstacles and follow camp/cave/building maps. Camp NPCs retu
 and patrol. Busy friends can pass through each other. NPC aim pacing and firing decisions
 respect weapon reach. Flying creatures and seated Apocapatrol crews keep game movement.
 
+## Version 1.9.10
+
+- Moving sneak animations now correct the hind-leg joints to the donor gait's contact/lift height. Normal walk/run and stationary sneaking are unchanged.
+- Car sitting uses the original torso and head pose, with the whole dog positioned 22.5 cm lower than 1.9.9. The chest translation and neck bends have been removed; forward placement is retained.
+- A newly acquired living enemy immediately cancels the sneak speed cap and the sneak pose, even during the frame when target selection changes.
+- Dog Companion's sticky aggro redirect is bypassed for enemies managed by NPC Overhaul. A nearby companion (within 3 m) makes engaged hostile humans retreat to a suitable Hide object or map cover if one exists, excluding bosses. Retreat lasts at most 4 seconds, ends earlier once the dog is over 6 m away, and cannot repeat until 12 seconds after it began. Existing combat targets are retained; with no suitable cover, enemies continue fighting. This behavior requires NPC Overhaul detection and pathfinding to be enabled.
+
+Install both the updated DLL and animation bundle.
+
+## Version 1.9.9
+
+The companion uses crouched idle and low forward-walk animations when the player crouches or crawls, following at up to 1.6 m/s. Standing restores normal movement, and combat keeps the existing attack behavior. The new clips use the same support-height calibration as normal walking.
+
+While sitting in a vehicle, the front half (chest, shoulders, neck and head) is lowered another 22.5 cm. The previous passenger position and lowered-head pose remain. Install the updated DLL and animation bundle together. Release build and bundle build completed; additional runtime tests were skipped for this update.
+
+## Version 1.9.8
+
+Companion car placement moves another 15 cm forward and 10 cm up relative to 1.9.7. The total riding adjustment is now 45 cm forward and 10 cm up from Dog Companion's configured passenger position. The seated head pose and walking remain unchanged.
+
+## Version 1.9.7
+
+**Companion car pose:** while riding, the companion sits 30 cm farther forward than Dog Companion's configured passenger position, and folds its neck forward to lower the head beneath the roof. The head pose blends in during sit-down and is removed on leaving the vehicle. Walking, running, attacks and their ground-height correction are unchanged. Dog Companion's `SeatForward` remains available for vehicle-specific adjustment; this patch adds 0.30 m to it.
+
+## Version 1.9.6
+
+**Companion height correction.** The animation's rendered contact surface is aligned with Dog Companion's ground/seat placement each frame. This removes the airborne walk and the floating sitting pose caused by the donor rig's different vertical offset. Only the visual rig is moved; follow/navigation placement and vehicle offsets retain their original meaning. Alignment scales with the dog and follows the car's local up direction. The updated bundle includes contact-height curves for the Wild Hound, so seated paws/haunches are aligned using the skin geometry rather than only bone pivots.
+
+## Version 1.9.5
+
+**Dog Companion compatibility** activates automatically when FlyingKlick's Dog Companion is loaded (tested with 1.2.0). Its friendly Wild Hound uses NPC Overhaul's idle, walk and run animations and the same close-bite / committed running-bite state machine. Damage happens once at the contact frame, only against the same living target, in reach, in front and with no solid obstruction. Dodging the running bite makes it miss.
+
+The companion uses a real sit-down animation and a sitting idle loop while riding in a vehicle. It resumes normal movement on exit. Follow/scouting, target selection, leash, fetch, tool props, bark, dismiss/recall, passenger placement and ride scale remain managed by Dog Companion. Its `Combat/BiteDamage` still sets damage; NPC Overhaul supplies the bite rhythm instead of `Combat/BiteInterval`. The companion does not enter the hostile NPC sensing/brain registry.
+
+Install both `NPCAI.dll` and the updated `NPCAI/Models/npcai_dogs.bundle`. No separate patch DLL or changes to Dog Companion are needed. If Dog Companion is absent, its private API is incompatible, or the bundle lacks sitting clips, its original behavior remains available and a compatibility warning is logged when appropriate.
+
+Controlled native Unity/PlayMaker checks cover the shipped companion DLL, animations, seated parenting, transition continuity, contact damage, missed/blocked bites, committed running attacks, dismissal/recall, disabling and scene cleanup, plus original canine rest and attack behavior. These tests advance clip clocks explicitly. Vehicle-specific seat offsets and normal gameplay still need live visual review.
+
 ## Version 1.9.4
 
 The mod is now called **NPC Overhaul** (shown so in Apocasetter and the BepInEx log). GUID `com.denis.apocalypter.npcai`, `NPCAI.dll`, the `NPCAI/` plugin folder and the config file stay the same.

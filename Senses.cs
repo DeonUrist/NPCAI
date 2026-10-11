@@ -1447,6 +1447,7 @@ namespace NPCAI
         }
 
         // ---------- registry ----------
+        internal static Agent AgentFor(GameObject owner) { return Get(owner); }
         private static Agent Get(GameObject owner)
         {
             Agent a;

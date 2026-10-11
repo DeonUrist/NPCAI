@@ -14,9 +14,10 @@ namespace NPCAI
     [BepInPlugin(GUID, NAME, VERSION)]
     [BepInDependency("com.denis.apocalypter.gunplay", BepInDependency.DependencyFlags.SoftDependency)]
     [BepInDependency("com.denis.apocalypter.apocaplayer", BepInDependency.DependencyFlags.SoftDependency)]   // (1.2.0) its ModAPI animates the gunmen
+    [BepInDependency("apocalypter.dogcompanion", BepInDependency.DependencyFlags.SoftDependency)]
     public sealed class Plugin : BaseUnityPlugin
     {
-        public const string GUID = "com.denis.apocalypter.npcai", NAME = "NPC Overhaul", VERSION = "1.9.4";
+        public const string GUID = "com.denis.apocalypter.npcai", NAME = "NPC Overhaul", VERSION = "1.9.10";
         internal static ManualLogSource Log;
         internal static string Dir;
         internal static ConfigEntry<bool> ApocaplayerClips, VerboseLog;
@@ -331,6 +332,7 @@ namespace NPCAI
             vanilla.Patch(AccessTools.Method(typeof(SetFsmFloat), "OnEnter"), postfix: new HarmonyMethod(typeof(VanillaEvents), nameof(VanillaEvents.AfterDamage)));
             vanilla.Patch(AccessTools.Method(typeof(SetFsmFloat), "OnEnter"), postfix: new HarmonyMethod(typeof(DogBite), nameof(DogBite.AfterSetFsmFloat)));
             DogAnimations.Initialize(_hidden);       // (1.9.4) fixed at the tuned values: no [Behaviour] settings any more
+            DogCompanionCompat.Initialize();
             DropBehaviourSection();
             SceneManager.sceneLoaded += SceneLoaded;
             EnsureRunner();

@@ -87,6 +87,7 @@ namespace NPCAI
             public float NextTrail, NextTraceLog, NextTraceDump; public Vector3 TraceGoal; public string LegBlock = "";
             // (1.1.0) cover: the spot, when the stay ends, arrived there, started by the game's own "hide" (a fast target) or by low health
             public Vector3 CoverPos; public float CoverUntil, CoverSince, NextCoverCheck, CoverCooldownUntil; public bool CoverArrived, CoverFromHide;
+            public GameObject DogCoverThreat; public float NextDogCoverCheck, DogCoverRetry;
             public FsmGameObject HideVar;            // the Attack FSM's "Hide" variable (its FindClosest result)
             public FsmFloat HpVar; public float HpMax;   // the Health FSM's Health, and the most it was seen at
             public bool Travel; public float RunZ;
@@ -278,6 +279,7 @@ namespace NPCAI
             n.Dist = d;
             int kind = Senses.KindOf(n.Owner);           // 0 vanilla / seen target, 1 seen target, 2 going to a ghost, 3 searching at it
             string ast = n.Attack.Fsm.ActiveStateName;
+            if (n.Mode != Mode.Cover) CompanionCoverCheck(n, now);
             // (1.1.0) in cover: stays there (a wounded raider does not come out after a ghost), see CoverThink
             if (n.Mode == Mode.Cover) { CoverThink(n, now, ast, kind, tp); return; }
             // (1.6.0) a ghost to walk to: Idle walks the raider there the way it walks home (map to the exit, then straight); the brain only
@@ -460,6 +462,32 @@ namespace NPCAI
             StartCover(n, spot, now, UnityEngine.Random.Range(Plugin.CoverMin.Value, Mathf.Max(Plugin.CoverMin.Value, Plugin.CoverMax.Value)), false, "health " + hp.ToString("0") + "/" + n.HpMax.ToString("0") + ", " + what);
         }
 
+        private static void CompanionCoverCheck(Npc n, float now)
+        {
+            if (now < n.NextDogCoverCheck || now < n.DogCoverRetry || n.T.parent != null) return;
+            n.NextDogCoverCheck = now + .5f;
+            var agent = Senses.AgentFor(n.Owner);
+            if (agent == null || !agent.Human || !agent.Hostile.Contains("Player") || (agent.State != Senses.State.Combat && agent.State != Senses.State.Hide)) return;
+            var threat = DogCompanionCompat.CloseThreat(n.Owner, 3f);
+            if (threat == null) return;
+            foreach (var fsm in n.Owner.GetComponents<PlayMakerFSM>()) if (fsm.FsmName == "BossUI") return;
+            Vector3 dogPos = threat.transform.position, spot = Vector3.zero;
+            float range = Plugin.CoverRange.Value, best = range * range; bool found = false;
+            NearestHide(n.T.position, range); // refresh the existing shared Hide cache
+            foreach (var hide in _hides)
+            {
+                if (hide == null) continue;
+                Vector3 p = hide.transform.position;
+                float distance = (p - n.T.position).sqrMagnitude;
+                if (distance < 2.25f || distance >= best || (p - dogPos).sqrMagnitude < 25f) continue;
+                best = distance; spot = p; found = true;
+            }
+            if (!found) found = Nav.CoverSpot(n.T.position, dogPos, range, out spot) && (spot - dogPos).sqrMagnitude >= 25f && (spot - n.T.position).sqrMagnitude > 2.25f;
+            if (!found) return; // no cover: keep fighting, rather than inventing a flee state
+            StartCover(n, spot, now, 4f, false, "nearby companion dog: brief retreat to cover");
+            n.DogCoverThreat = threat; n.DogCoverRetry = now + 12f;
+        }
+
         private static void StartCover(Npc n, Vector3 spot, float now, float seconds, bool fromHide, string why)
         {
             n.CoverPos = spot; n.CoverArrived = false; n.CoverFromHide = fromHide; n.CoverSince = now; n.CoverUntil = now + seconds;
@@ -473,7 +501,10 @@ namespace NPCAI
             float cd = c3.magnitude, td = n.Dist;
             // leaves: the stay is over, the target is on top of it, the game's hide ended (a slow target again), or it is searching /
             // vanilla (no target at all). A ghost (lost sight) does not pull a wounded raider out of cover.
-            bool leave = now >= n.CoverUntil || (kind == 1 && td < 8f) || (n.CoverFromHide && ast != "hide" && now - n.CoverSince > 1f) || kind == 3 || (kind == 0 && Senses.On);
+            bool dogCover = n.DogCoverThreat != null;
+            bool leave = now >= n.CoverUntil || (!dogCover && kind == 1 && td < 8f)
+                || (dogCover && (!n.DogCoverThreat.activeInHierarchy || n.DogCoverThreat.transform.parent != null || (n.DogCoverThreat.transform.position - n.T.position).sqrMagnitude > 36f))
+                || (n.CoverFromHide && ast != "hide" && now - n.CoverSince > 1f) || kind == 3 || (kind == 0 && Senses.On);
             if (leave)
             {
                 if (n.CoverArrived) Move(n, true);
@@ -1019,6 +1050,7 @@ namespace NPCAI
         {
             Mode was = n.Mode;
             n.Mode = m;
+            if (m != Mode.Cover) n.DogCoverThreat = null;
             if (m == Mode.Cover && was != Mode.Cover) Senses.SetHiding(n.Owner, true);          // the senses: keep the target, take no ghosts
             else if (was == Mode.Cover && m != Mode.Cover) Senses.SetHiding(n.Owner, false);
             if (Tracing && m != was)
