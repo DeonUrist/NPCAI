@@ -1,3 +1,9 @@
+# Quadruped height restoration — 1.9.11
+
+Verified 2026-10-12: Yard Hound, Grimhound, Nightwalker and Alpha Nightwalker match the original pre-offset bundle exactly across nine actions and five sampled phases per rig. Maximum native transform position error is zero. The Wild Hound/companion clips and added sitting/sneaking clips are preserved byte-for-byte. The 57-clip bundle loads in the actual Unity 2020.3.49f1 game process, and the existing companion compatibility checks pass. This is a controlled native-engine comparison; normal player-save gameplay still needs visual confirmation.
+
+The builder now resets the donor pose before capturing each creature's reference height. Runtime combat, idle timing and companion placement logic are unchanged.
+
 # NPC Overhaul — Dog Companion compatibility
 
 Version 1.9.10: release build and animation bundle build succeed. Focused native

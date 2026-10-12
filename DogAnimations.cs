@@ -43,6 +43,8 @@ namespace NPCAI
         private static ConfigEntry<bool> enabled, resting, jumping;
         private static ConfigEntry<float> idleMin, idleMax, frontLift;
         private static AssetBundle bundle;
+        private static AssetBundle wildHoundBundle;
+        private static Dictionary<string, AnimationClip> wildHoundClips;
         private const int Solid = (1 << 0) | (1 << 8) | (1 << 9) | (1 << 11) | (1 << 14) | (1 << 16);
         private const int Floor = (1 << 0) | (1 << 8) | (1 << 11) | (1 << 14);
         private static bool On { get { return enabled != null && enabled.Value && Plugin.DogBiteEnabled != null && Plugin.DogBiteEnabled.Value && Senses.On; } }
@@ -69,6 +71,23 @@ namespace NPCAI
                     if (!Clips.TryGetValue(prefab, out list)) { list = new Dictionary<string, AnimationClip>(); Clips[prefab] = list; }
                     list[action] = clip;
                 }
+                // The companion positions its pivot by paw depth; native hounds use the game's original pivot.
+                // Keep those animation offsets independent, without touching the companion's tuned clips.
+                string wildPath = Path.Combine(Path.Combine(Plugin.Dir, "Models"), "npcai_wildhound.bundle");
+                if (File.Exists(wildPath))
+                {
+                    try
+                    {
+                        wildHoundBundle = AssetBundle.LoadFromFile(wildPath);
+                        if (wildHoundBundle == null) throw new InvalidDataException("Native Wild Hound bundle could not be loaded");
+                        var nativeClips = wildHoundBundle.LoadAllAssets<AnimationClip>().Where(c => c.name.StartsWith("Wild_Hound_", StringComparison.Ordinal)).ToDictionary(c => c.name.Substring("Wild_Hound_".Length));
+                        if (new[] { "Idle", "Walk", "Run", "LieDown", "LieIdle", "GetUp", "Bite", "MovingBite", "JumpAttack" }.Any(action => !nativeClips.ContainsKey(action)))
+                            throw new InvalidDataException("Native Wild Hound bundle is incomplete");
+                        wildHoundClips = nativeClips;
+                        Plugin.Log.LogInfo("Wild Hound: loaded independent native offsets; personal dog keeps companion offsets.");
+                    }
+                    catch (Exception e) { wildHoundClips = null; Plugin.Log.LogWarning("Native Wild Hound offsets unavailable; using shared clips: " + e.Message); }
+                }
                 var harmony = new Harmony(Plugin.GUID + ".dogs");
                 harmony.Patch(AccessTools.Method(typeof(Fsm), "ProcessEvent"), prefix: new HarmonyMethod(typeof(DogAnimations), nameof(BeforeDamageEvent)));
                 harmony.Patch(AccessTools.Method(typeof(SetVelocity), "DoSetVelocity"), prefix: new HarmonyMethod(typeof(DogAnimations), nameof(BeforeSetVelocity)));
@@ -91,6 +110,11 @@ namespace NPCAI
             Dictionary<string, AnimationClip> clips;
             if (!Clips.TryGetValue(prefab, out clips) || new[] { "Idle", "Run", "LieDown", "LieIdle", "GetUp", "Bite" }.Any(n => !clips.ContainsKey(n))) return;
             if (companion != null && new[] { "Walk", "MovingBite", "SitDown", "SitIdle" }.Any(n => !clips.ContainsKey(n))) return;
+            if (companion == null && prefab == "Wild_Hound" && wildHoundClips != null)
+            {
+                clips = new Dictionary<string, AnimationClip>(clips);
+                foreach (var nativeClip in wildHoundClips) clips[nativeClip.Key] = nativeClip.Value;
+            }
             var animator = agent.Owner.GetComponentInChildren<Animator>(true);
             var body = agent.Owner.GetComponent<Rigidbody>(); if (animator == null || (body == null && companion == null)) return;
             var bones = agent.Owner.GetComponentsInChildren<SkinnedMeshRenderer>(true).SelectMany(r => r.bones).Where(t => t != null && t != animator.transform).Distinct().ToArray();

@@ -9,6 +9,18 @@ fight, steer around obstacles and follow camp/cave/building maps. Camp NPCs retu
 and patrol. Busy friends can pass through each other. NPC aim pacing and firing decisions
 respect weapon reach. Flying creatures and seated Apocapatrol crews keep game movement.
 
+## Version 1.9.12
+
+Wild Hound NPCs now select their own original-offset clip set from `Models/npcai_wildhound.bundle`. The personal Dog Companion keeps its current clips, paw/skin support alignment, sitting, sneaking and vehicle placement. The other quadrupeds and main 57-clip bundle are unchanged. Install the DLL and the new native Wild Hound bundle together.
+
+Native tests confirm separate clip selection and original rig positions across all nine actions at five phases. The existing personal dog compatibility checks pass.
+
+## Version 1.9.11
+
+Restores the pre-offset animation poses for Yard Hound, Grimhound, Nightwalker and Alpha Nightwalker. The bundle rebuild had measured each new creature against the donor's previous sitting/crouching pose, shifting the body height; the builder now restores the donor rest pose before every creature. The current Wild Hound/companion clips, seated placement, support-height correction and sneaking fixes are preserved.
+
+Native checks compare all nine original actions at five phases for each restored rig, with zero position difference from the original bundle. All 57 clip payloads match either their original baseline or the preserved current release; the existing companion compatibility checks pass. Install the DLL and bundle together.
+
 ## Version 1.9.10
 
 - Moving sneak animations now correct the hind-leg joints to the donor gait's contact/lift height. Normal walk/run and stationary sneaking are unchanged.

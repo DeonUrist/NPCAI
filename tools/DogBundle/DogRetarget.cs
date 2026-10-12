@@ -79,6 +79,8 @@ public static partial class DogBuilder {
   var clips=AssetDatabase.LoadAllAssetsAtPath(Source).OfType<AnimationClip>().Where(c=>!c.name.StartsWith("__preview__")).ToDictionary(c=>c.name.Split('|').Last());
   Directory.CreateDirectory("Assets/Clips");var assets=new List<string>();var reports=new List<string>();
   foreach(string file in Directory.GetFiles("Assets/Targets","*.json")) {
+   // The previous creature may finish sitting/crouching. Reference heights must always use the donor rest pose.
+   Restore(sourceNodes,sourcePos,sourceRot);
    var data=JsonUtility.FromJson<Target>(File.ReadAllText(file));Transform[] targetNodes;var target=Create(data,out targetNodes);
    Transform animator=targetNodes[data.animators[0].node];var byName=targetNodes.GroupBy(t=>t.name).ToDictionary(g=>g.Key,g=>g.First());
    var map=Mapping(data.prefab=="Grimhound");var links=new List<Link>();

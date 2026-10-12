@@ -31,3 +31,12 @@ height. It rotates existing joints without translating or stretching the bones.
 Copy `Build/npcai_dogs.bundle` to `Models/npcai_dogs.bundle` after a successful
 build. The companion requires both sit clips along with locomotion and bite clips;
 an older bundle keeps its original controller rather than taking partial ownership.
+
+
+Native Wild Hound offsets are deliberately separate from the companion's clips.
+`Models/npcai_wildhound.bundle` contains the nine original pre-companion Wild Hound
+clips. Rebuilding the main canine bundle does not replace this native offset set;
+keep both bundles when packaging or deploying. The companion continues to use
+`Wild_Hound_*` from the main bundle and its own support-height placement.
+The original offset baseline is kept locally at
+`_staging/npcai-dogcompanion-compat/backup/npcai_dogs.bundle`.

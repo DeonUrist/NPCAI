@@ -17,7 +17,7 @@ namespace NPCAI
     [BepInDependency("apocalypter.dogcompanion", BepInDependency.DependencyFlags.SoftDependency)]
     public sealed class Plugin : BaseUnityPlugin
     {
-        public const string GUID = "com.denis.apocalypter.npcai", NAME = "NPC Overhaul", VERSION = "1.9.10";
+        public const string GUID = "com.denis.apocalypter.npcai", NAME = "NPC Overhaul", VERSION = "1.9.12";
         internal static ManualLogSource Log;
         internal static string Dir;
         internal static ConfigEntry<bool> ApocaplayerClips, VerboseLog;
