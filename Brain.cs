@@ -41,7 +41,7 @@ namespace NPCAI
     //   Raycast.DoRaycast (Attack, the 1.2 m bumper rays) - report clear;                 LookAt.DoLookAt (Attack, owner) - our turn rate instead;
     //   SendEvent.OnEnter (Attack "Animal_Run" while holding -> "Animal_Idle"; Unstuck "Animal_rotateRandom" -> our stuck handling);
     //   AddForce.DoAddForce (Unstuck) - no hop.
-    internal static class Brain
+    internal static partial class Brain
     {
         internal enum Mode { Off, Chase, Hold, Advance, BackUp, Rest, Search, Walk, Cover }   // Walk (1.6.0): Idle walks it to a ghost, the brain stands aside; Cover (1.1.0): runs to cover, fights from there
 
@@ -151,6 +151,7 @@ namespace NPCAI
             {
                 var n = kv.Value;
                 if (n.Owner == null) continue;
+                if(SimpleBandits.Has(n.Owner)&&!SimpleBandits.Fighting(n.Owner))continue;
                 if (!on)
                 {
                     if (n.Mode != Mode.Off) SetMode(n, Mode.Off, "brain off");
@@ -271,6 +272,7 @@ namespace NPCAI
 
         private static void Think(Npc n, float now)
         {
+            if(SimpleBandits.Has(n.Owner)){SimpleThink(n,now);return;}
             var target = n.Target.Value;
             if (target == null) { if (n.Mode != Mode.Off) SetMode(n, Mode.Off, "no target"); return; }
             Vector3 tp = target.transform.position;
@@ -1381,6 +1383,11 @@ namespace NPCAI
 
         private static void OnStuck(Npc n)
         {
+            if(SimpleBandits.Has(n.Owner))
+            {
+                if(n.Mode==Mode.Chase){n.ModeUntil=Time.time+0.5f;SetMode(n,Mode.BackUp,"simple bandit backs up");}
+                return;
+            }
             float now = Time.time;
             if (n.Mode == Mode.Hold || n.Mode == Mode.Rest || n.Mode == Mode.Search || n.Mode == Mode.Walk || n.Mode == Mode.BackUp || n.Mode == Mode.Off) return;   // standing still (or Idle's walk): the Unstuck FSM's "not moving" is no stuck
             if (n.Travel || n.Halted || Senses.Blown(n.Owner)) return;          // pushed by a tornado / under the ground: not stuck

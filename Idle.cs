@@ -151,6 +151,7 @@ namespace NPCAI
             foreach (var a in Senses.AllAgents)
             {
                 if (a.Owner == null) continue;
+                if(SimpleBandits.Has(a.Owner))continue;
                 int id = a.Owner.GetInstanceID();
                 Ctl c;
                 if (!_ctl.TryGetValue(id, out c))

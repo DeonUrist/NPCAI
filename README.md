@@ -9,6 +9,29 @@ fight, steer around obstacles and follow camp/cave/building maps. Camp NPCs retu
 and patrol. Busy friends can pass through each other. NPC aim pacing and firing decisions
 respect weapon reach. Flying creatures and seated Apocapatrol crews keep game movement.
 
+## Version 1.9.15
+
+Apocapatrol can supply an explicit faction-aware target through `Api.SetSimpleConvoyBanditTarget`.
+Simple crew AI stays disabled while seated; dismounted combat members pursue that target with baked-map
+navigation, without ghost targets, forgetting or idle patrols. A supplied null target stops pursuit.
+Converted Coyote crews use the game's FactionRelation_Coyotes hostility state, and player attacks send
+the game's faction hostility event. Missing Attack LOS targets return not visible before sensor lookup.
+
+## Version 1.9.14
+
+Apocapatrol's optional simple AI has explicit seated/combat states. Seated members skip senses and
+brain decisions. Combat dismounts pursue the real player persistently, use baked-map navigation and
+basic obstacle steering, and check line of sight when shooting. They do not acquire ghost targets,
+forget the player, investigate sounds or enter idle patrols. Unmarked NPCs keep their usual behavior.
+
+## Version 1.9.13
+
+Optional `Api.SetSimpleConvoyBandit(GameObject, bool)` lets Apocapatrol mark its crew and dismounted
+raiders for cheaper AI. Marked NPCs retain basic combat and existing baked-map navigation, but use
+slower thought/sight intervals and skip noise investigations, idle rounds, cover and friend steering fans.
+NPCs without that marker retain the normal behaviour. Apocapatrol exposes the switch as
+**Experimental → simple convoy bandits AI**.
+
 ## Version 1.9.12
 
 Wild Hound NPCs now select their own original-offset clip set from `Models/npcai_wildhound.bundle`. The personal Dog Companion keeps its current clips, paw/skin support alignment, sitting, sneaking and vehicle placement. The other quadrupeds and main 57-clip bundle are unchanged. Install the DLL and the new native Wild Hound bundle together.

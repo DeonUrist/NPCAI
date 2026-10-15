@@ -37,7 +37,7 @@ namespace NPCAI
     //   look-around (the brain turns the body), then the NPC drops to idle where it stands. A ghost nobody holds any more disappears.
     // Everything is saved per slot (ghosts, who holds which, combat targets, search time left) and restored after a load.
     // [Senses] Enabled = false restores the game's sensors and detection untouched.
-    internal static class Senses
+    internal static partial class Senses
     {
         internal enum Src { None = 0, Engine = 1, Thrown = 2, Gunshot = 3, Shout = 4, Hit = 5, Vision = 6 }
         internal enum State { Idle, Combat, Investigate, Search, Hide }   // Hide (1.1.0): in cover - keeps its target, takes no ghosts until the brain ends the cover
@@ -105,6 +105,7 @@ namespace NPCAI
 
         public static void OnSceneLoaded()
         {
+            SimpleBandits.Clear();
             foreach (var g in _ghosts) if (g.Obj != null) UnityEngine.Object.Destroy(g.Obj);
             foreach (var kv in _agents) if (kv.Value.FlankObj != null) UnityEngine.Object.Destroy(kv.Value.FlankObj);
             _ghosts.Clear(); _agents.Clear(); _ignored.Clear(); _hpOf.Clear(); _prefabOf.Clear(); _presentTags.Clear(); Nwh.Clear();
@@ -131,9 +132,10 @@ namespace NPCAI
                     if (a.Owner == null) { if (a.Ghost != null) { a.Ghost.Holders.Remove(a); } if (a.FlankObj != null) UnityEngine.Object.Destroy(a.FlankObj); _dead.Add(kv.Key); }
                     else
                     {
+                        if(SimpleBandits.Has(a.Owner)){if(on&&!a.SensorsOff)Sensors(a,false);continue;}
                         if (!on && a.SensorsOff) Sensors(a, true);
                         else if (on && !a.SensorsOff) Sensors(a, false);        // switched back on: the game's sensors go quiet again
-                        if (a.PlayerIsEnemy != null) Relation(a, true);
+                        if (a.PlayerIsEnemy != null||a.Owner.CompareTag("Coyotes")) Relation(a, true);
                         if (a.Done.Count > 16) PruneDone(a);
                         _presentTags.Add(a.Tag);
                         a.InStorm = Storm.Any && Storm.In(a.T.position);
@@ -176,6 +178,7 @@ namespace NPCAI
         // ---------- sight ----------
         private static void Look(Agent a, float interval, float now)
         {
+            if(SimpleBandits.Has(a.Owner)){SimpleLook(a,now);return;}
             // shoved by a tornado: it forgets what it was doing unless it sees the player right now (sight still works, hearing doesn't)
             if (a.Blown && a.State != State.Idle && !(a.State == State.Combat && a.Target == _player && a.UnseenFor < 0.5f))
             {
@@ -628,6 +631,7 @@ namespace NPCAI
         // check a shout about the player; the player now shoots elsewhere: that is where the player is). Never while it sees its target.
         private static bool Assign(Agent a, Ghost g, Src prio, float now)
         {
+            if(SimpleBandits.Has(a.Owner))return false;
             if (g == null || a.State == State.Combat || a.State == State.Hide || g.Retired || a.AmbushDist > 0f) return false;      // (1.3.2) an ambusher in wait ignores sounds
             float doneAt;
             if (a.Done.TryGetValue(g.Id, out doneAt) && g.Moved <= doneAt + 0.01f) return false;   // been there, nothing new about it
@@ -767,7 +771,7 @@ namespace NPCAI
             {
                 _responders.Clear();
                 float near2 = Plugin.GunshotNearRange.Value * Plugin.GunshotNearRange.Value, r2a = radius * radius;
-                foreach (var kv in _agents) { var a = kv.Value; if (a.Owner != null && a.T.parent == null && (a.T.position - pos).sqrMagnitude <= r2a && (filter == null || filter(a))) _responders.Add(a); }
+                foreach (var kv in _agents) { var a = kv.Value; if (a.Owner != null && !SimpleBandits.Has(a.Owner) && a.T.parent == null && (a.T.position - pos).sqrMagnitude <= r2a && (filter == null || filter(a))) _responders.Add(a); }
                 if (_responders.Count > Plugin.GunshotResponders.Value)
                 {
                     _responders.Sort((x, y) => (x.T.position - pos).sqrMagnitude.CompareTo((y.T.position - pos).sqrMagnitude));
@@ -792,7 +796,7 @@ namespace NPCAI
             foreach (var kv in _agents)
             {
                 var a = kv.Value;
-                if (a.Owner == null || a.T.parent != null || (sroot != null && a.T == sroot)) continue;
+                if (a.Owner == null || SimpleBandits.Has(a.Owner) || a.T.parent != null || (sroot != null && a.T == sroot)) continue;
                 float d2 = (a.T.position - pos).sqrMagnitude;
                 if (d2 > r2) continue;
                 if (stormy && (srcStorm || a.InStorm) && d2 > rs2) continue;
@@ -1127,8 +1131,11 @@ namespace NPCAI
         internal static void Hurt(GameObject victim, GameObject attacker)
         {
             if (!On || victim == null || attacker == null) return;
+            var hit=victim.transform;while(hit!=null&&!hit.CompareTag("Coyotes"))hit=hit.parent;
+            if(hit!=null&&IsPlayer(attacker)){var relation=CoyoteRelation();if(relation!=null&&relation.Fsm.Initialized)relation.SendEvent("FactionCoyotesEnemy");}
             var a = Get(victim.transform.root.gameObject);
             if (a == null) return;
+            if(SimpleBandits.Has(a.Owner))return; // Combat dismounts retain the player; seated crew runs no senses.
             a.AmbushDist = 0f;      // (1.3.2) a hit ends the ambush: it comes up and fights
             Brain.Hit(a.Owner);
             if (a.State == State.Combat || a.State == State.Hide || a.Blown) return;
@@ -1289,6 +1296,8 @@ namespace NPCAI
                 if (!On) return true;
                 var fsm = __instance.Fsm;
                 if (fsm == null || fsm.Name != "Attack") return true;
+                if(__instance.targetObject==null||__instance.targetObject.Value==null)
+                {if(__instance.storeVisibility!=null&&!__instance.storeVisibility.IsNone)__instance.storeVisibility.Value=0f;if(__instance.storeIsVisible!=null&&!__instance.storeIsVisible.IsNone)__instance.storeIsVisible.Value=false;if(!__instance.everyFrame)__instance.Finish();return false;}
                 var a = Get(fsm.GameObject);
                 if (a == null) return true;
                 // seen within the last two looks AND a clear line right now: no bursts through the wall you just stepped behind
@@ -1392,6 +1401,7 @@ namespace NPCAI
         {
             try
             {
+                if(SimpleBandits.Has(__result))return;
                 if (!On || !Plugin.BailOutAware.Value || __result == null) return;
                 GameObject target = null;
                 if (pax != null)
@@ -1432,6 +1442,7 @@ namespace NPCAI
 
         private static void Handover(Agent a)
         {
+            if(SimpleBandits.Has(a.Owner)){_handover.Remove(a.Owner.GetInstanceID());return;}
             if (_handover.Count == 0) return;
             KeyValuePair<GameObject, float> h;
             int id = a.Owner.GetInstanceID();
@@ -1522,7 +1533,7 @@ namespace NPCAI
             bool hostile;
             var f = a.PlayerIsEnemy;
             if (f != null && f.Fsm != null && f.Fsm.Initialized) hostile = f.ActiveStateName == "PlayerEnemy";
-            else hostile = a.BaseHostile.Contains("Player");
+            else hostile = a.Owner.CompareTag("Coyotes")?CoyoteHostile():a.BaseHostile.Contains("Player");
             if (hostile == a.Hostile.Contains("Player")) return;
             if (hostile) a.Hostile.Add("Player"); else a.Hostile.Remove("Player");
             if (log) Log(a, hostile ? "turns hostile to the player" : "makes peace with the player");
@@ -1534,6 +1545,14 @@ namespace NPCAI
             foreach (var b in a.Sensors) if (b != null) b.enabled = on;
             a.SensorsOff = !on;
         }
+        private static PlayMakerFSM _coyoteRelation;private static float _nextCoyoteRelation;
+        private static PlayMakerFSM CoyoteRelation()
+        {
+            if(_coyoteRelation==null&&Time.time>=_nextCoyoteRelation)
+            {_nextCoyoteRelation=Time.time+2f;var manager=GameObject.Find("__GameManager__");if(manager!=null)foreach(var f in manager.GetComponents<PlayMakerFSM>())if(f.FsmName=="FactionRelation_Coyotes"){_coyoteRelation=f;break;}}
+            return _coyoteRelation;
+        }
+        private static bool CoyoteHostile(){var f=CoyoteRelation();return f!=null&&f.Fsm.Initialized&&(f.ActiveStateName=="PlayerEnemy"||f.FsmVariables.FindFsmInt("OnOff")?.Value>0);}
 
         private static string[] _trackers; private static string _trackersSrc;
         private static bool IsTracker(string prefab)
@@ -1581,6 +1600,7 @@ namespace NPCAI
                     default: set.Add("Player"); set.Add("Mutant"); set.Add("Carnivore"); set.Add("Coyotes"); break;
                 }
             }
+            if(owner.CompareTag("Coyotes")){set.Remove("Coyotes");set.Add("Scrapyard");if(CoyoteHostile())set.Add("Player");else set.Remove("Player");}
             return set;
         }
 
